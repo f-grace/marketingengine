@@ -2,12 +2,12 @@
 
 Two passes, deliberately:
 
-    Pass A  wide + cheap    all accounts, no comments, no downloads   ~$1.70/1k
+    Pass A  wide + cheap    all accounts, no comments, no downloads   ~$3.70/1k
     Pass B  narrow + rich   only selected posts, + comments + images
 
 Comments and image downloads are per-post multipliers on billed results.
 Applying them to all 1,000 posts instead of the ~50 you actually analyse is the
-difference between a $1.70 run and a $40 run.
+difference between a $3.70 run and a $40+ run.
 
 Every field below comes from the actor's published input schema. Two values are
 NOT verified and are flagged inline: the allowed set for `profileSorting`, and
@@ -26,10 +26,19 @@ from apify_client import ApifyClient
 
 from .config import ACTOR_ID
 
-# Roughly $1.70 per 1,000 results, per the actor's pay-per-event pricing.
+# Pay-per-event rate, read off the actor page in Apify Console ("from $3.70 /
+# 1,000 results", Aug 2026). The "from" matters: the rate drops on higher
+# subscription tiers, so this is the free/entry-tier figure and therefore the
+# conservative one to estimate with.
+#
 # Directional only. Apify documents pre-run cost estimation as unreliable, so
-# treat this as a sanity check, not a bill.
-USD_PER_1000_RESULTS = 1.70
+# treat this as a sanity check, not a bill. Override for your tier if needed.
+USD_PER_1000_RESULTS = 3.70
+
+# Free tier gives $5/month of credit. A full 10-account x 100-post sweep is
+# 1,000 results = $3.70, i.e. 74% of a month's credit in one run. The CLI warns
+# when an estimate crosses this.
+FREE_TIER_MONTHLY_CREDIT = 5.00
 
 
 class ApifyError(RuntimeError):

@@ -25,7 +25,13 @@ competitors:
 
 scrape:
   # Posts per account per run.
-  results_per_page: 100
+  #
+  # Deliberately low to start. The actor bills ~$3.70 per 1,000 results and the
+  # Apify free tier is $5/month, so a 10-account x 100-post sweep is 1,000
+  # results = $3.70, i.e. most of a month's credit in a single run.
+  #
+  # Validate the setup at 50, confirm the ingest looks right, then scale up.
+  results_per_page: 50
 
   # How far back to look. Format cycles turn over in roughly three weeks, so
   # anything much older than this is archaeology.

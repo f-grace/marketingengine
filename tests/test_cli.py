@@ -63,6 +63,41 @@ class TestExportOptions:
         assert _parse(["export", "--sheet-name", "Q4"]).sheet_name == "Q4"
 
 
+class TestBudgetWarning:
+    """The actor bills ~$3.70/1,000 results against a $5/month free tier, so a
+    single full sweep can eat most of the allowance. Silence here means a
+    surprise bill."""
+
+    def test_cheap_run_is_silent(self):
+        assert cli._budget_warning(0.56) is None
+
+    def test_half_the_credit_warns(self):
+        msg = cli._budget_warning(2.60)
+        assert msg is not None
+        assert "52%" in msg
+
+    def test_exceeding_the_credit_warns_harder(self):
+        msg = cli._budget_warning(9.44)
+        assert msg is not None
+        assert "exceeds" in msg
+
+    def test_full_sweep_at_real_pricing_triggers_a_warning(self):
+        from engine import apify
+
+        # 10 accounts x 100 posts = 1,000 results.
+        est = 10 * 100 / 1000.0 * apify.USD_PER_1000_RESULTS
+        assert est == pytest.approx(3.70)
+        assert cli._budget_warning(est) is not None
+
+    def test_recommended_first_run_is_silent(self):
+        from engine import apify
+
+        # 3 accounts x 50 posts = 150 results.
+        est = 3 * 50 / 1000.0 * apify.USD_PER_1000_RESULTS
+        assert est < 1.0
+        assert cli._budget_warning(est) is None
+
+
 class TestConfigErrorsAreFriendly:
     def test_missing_token_message_is_actionable(self, monkeypatch, tmp_path):
         from engine import config

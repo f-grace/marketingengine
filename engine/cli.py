@@ -33,6 +33,25 @@ def _open_db() -> sqlite3.Connection:
     return db.connect(config.DB_PATH)
 
 
+def _budget_warning(estimate: float) -> Optional[str]:
+    """Warn when one run eats a serious share of the free monthly credit.
+
+    The free tier is $5/month and a full sweep is $3.70, so it is genuinely easy
+    to spend the month's allowance on a single exploratory run.
+    """
+    credit = apify.FREE_TIER_MONTHLY_CREDIT
+    if estimate >= credit:
+        return (f"This run alone (~${estimate:.2f}) exceeds the ${credit:.2f} "
+                "free monthly credit. Cut the account list or results_per_page "
+                "in config/accounts.yml, or make sure you are on a paid tier.")
+    if estimate >= credit * 0.5:
+        return (f"This run (~${estimate:.2f}) uses "
+                f"{estimate / credit * 100:.0f}% of the ${credit:.2f} free "
+                "monthly credit. Consider starting with 2-3 accounts and a "
+                "lower results_per_page to validate the setup cheaply.")
+    return None
+
+
 def _confirm(prompt: str, assume_yes: bool) -> bool:
     if assume_yes:
         return True
@@ -87,6 +106,10 @@ def cmd_scrape(args) -> int:
           f"x {settings.results_per_page} posts")
     print(f"  own: {', '.join(accounts.own) or '(none set)'}")
     print(f"  estimated cost: ~${est:.2f} (directional, not a quote)")
+
+    warning = _budget_warning(est)
+    if warning:
+        print(f"  BUDGET: {warning}")
 
     if not accounts.own:
         print("  NOTE: no 'own' handle configured. Add it now so baseline "
@@ -172,6 +195,10 @@ def cmd_enrich(args) -> int:
     print(f"Pass B over {len(urls)} selected posts "
           f"+ {settings.top_level_comments_per_post} comments each")
     print(f"  estimated cost: ~${est:.2f} (directional, not a quote)")
+
+    warning = _budget_warning(est)
+    if warning:
+        print(f"  BUDGET: {warning}")
 
     if not _confirm("Run the actor?", args.yes):
         print("Aborted.")

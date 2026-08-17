@@ -66,7 +66,7 @@ That is the most important integration detail in this document.
 
 ### Step 1 — Scrape (Pass A, wide and cheap)
 
-`clockworks/tiktok-scraper`, pay-per-event at ~**$1.70 / 1,000 results**.
+`clockworks/tiktok-scraper`, pay-per-event at ~**$3.70 / 1,000 results** (entry tier; drops on paid plans).
 
 **Include your own handle in `profiles` from day 1.** Analysis of your own posts
 is Phase 3, but the *collection* starts now. Baseline math needs history and
@@ -180,7 +180,7 @@ Only the ~50 selected posts:
 
 Comments and image downloads are per-post multipliers on billed results.
 Applying them to all 1,000 posts instead of the 50 you care about is where a
-$1.70 run becomes a $40 run.
+$3.70 run becomes a $40+ run.
 
 `maxRepliesPerComment: 0` because top-level comments are the questions your
 market is asking, while replies are commenters talking to each other. You pay
@@ -369,17 +369,41 @@ Idea state machine:
 
 ## 5. Cost model
 
-Per weekly run:
+**Actor rate: $3.70 per 1,000 results**, read off the actor page in Apify
+Console. An earlier draft of this plan used $1.70 from a search result; that was
+wrong. The "from" in "from $3.70" matters: the rate drops on higher subscription
+tiers, so $3.70 is the entry-tier figure and the conservative one to plan with.
 
-| Line | Cost |
-|---|---|
-| Pass A: 10 accounts x 100 posts | ~$1.70 |
-| Pass B: 50 posts x 30 comments + images | ~$3-5 |
-| AI analysis: 50 posts x ~6 slide images (vision) | ~$3-5 |
-| Clustering, contrast | $0 (local math) |
-| Idea generation | ~$0.50 |
-| **Weekly total** | **~$8-12** |
-| **Monthly** | **~$40-50** |
+Per weekly run at full size (10 accounts x 100 posts):
+
+| Line | Results | Cost |
+|---|---|---|
+| Pass A: wide sweep | 1,000 | $3.70 |
+| Pass B: 50 posts x 30 comments + images | ~1,550 | $5.74 |
+| AI analysis: 50 posts x ~6 slide images (vision) | — | ~$3-5 |
+| Clustering, contrast | — | $0 (local math) |
+| Idea generation | — | ~$0.50 |
+| **Weekly total** | | **~$13-15** |
+| **Monthly** | | **~$52-60** |
+
+**The free tier is $5/month of credit.** A single full Pass A is $3.70, or 74%
+of that, and Pass B alone exceeds it. So the free tier funds exploration, not
+operation. Two consequences:
+
+1. **Start small.** 3 accounts x 50 posts = 150 results = **$0.56**. Enough to
+   validate the input schema and the ingest before committing real money. The
+   example config ships at `results_per_page: 50` for this reason, and the CLI
+   warns when an estimate crosses half the free credit.
+2. **Pass B is the expensive half**, because comments are billed per comment and
+   30 comments x 50 posts is 1,500 billable results on its own. If cost becomes
+   the binding constraint, cut `top_level_comments_per_post` before cutting the
+   account list. Dropping it from 30 to 15 saves $2.78 per run and costs
+   relatively little signal, since comment quality falls off fast after the top
+   handful.
+
+Running weekly at full size needs a paid tier. Running biweekly at 6 accounts is
+roughly $25/month and is a reasonable place to sit until the pipeline has proven
+it produces concepts worth posting.
 
 Image generation and rendering costs are not here because they live in your
 existing system.

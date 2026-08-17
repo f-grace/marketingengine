@@ -21,13 +21,15 @@ Then:
 1. Put your Apify token in `.env` (get one at
    [console.apify.com/settings/integrations](https://console.apify.com/settings/integrations)).
    It is read from the environment only and never written to the store.
-2. List your own handle and 8-12 competitors in `config/accounts.yml`.
+2. List your own handle and competitors in `config/accounts.yml`. Start with
+   2-3 to validate cheaply; the actor bills ~$3.70/1k results against a $5/month
+   free tier, so a full 10-account sweep is most of a month's credit.
 3. Fill in `config/brand.json` when you get to generation. Phase 1 runs without it.
 
 ## Use
 
 ```bash
-./.venv/bin/python -m engine scrape    # Pass A: wide sweep, ~$1.70 per 1k posts
+./.venv/bin/python -m engine scrape    # Pass A: wide sweep, ~$3.70 per 1k results
 ./.venv/bin/python -m engine score     # baselines, scores, pick the batch
 ./.venv/bin/python -m engine enrich    # Pass B: comments + slide images
 ./.venv/bin/python -m engine export    # CSVs, plus Google Sheets if configured
@@ -63,7 +65,7 @@ including the ones losers share too.
 **Two-pass scraping.** Comments and image downloads are per-post multipliers on
 billed results. Pass A sweeps wide and cheap; Pass B enriches only the ~50 posts
 that made the batch. Applying enrichment to all 1,000 is the difference between
-a $1.70 run and a $40 run.
+a $0.56 validation run and a $9+ one.
 
 ## Layout
 
@@ -91,7 +93,7 @@ access, which is why the analytical core is cheap to test.
 ./.venv/bin/python -m pytest tests/ -q
 ```
 
-90 tests, no network calls, no API keys needed. The integration tests run real
+95 tests, no network calls, no API keys needed. The integration tests run real
 ingest, scoring, and export against synthetic actor output.
 
 Worth knowing about two of them:
