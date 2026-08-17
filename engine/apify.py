@@ -69,17 +69,15 @@ def pass_a_input(
     AI enrichment on a pay-per-event actor is very likely billed extra, and we
     run our own analysis downstream anyway.
     """
-    return {
+    payload = {
         "profiles": [h.lstrip("@") for h in handles],
         "profileScrapeSections": ["videos"],
         # NOTE: "latest" is the documented default. The README does not
         # enumerate the allowed values, so do not assume "popular" exists.
+        # Console currently shows search sorting as "temporarily blocked".
         "profileSorting": "latest",
         "resultsPerPage": results_per_page,
         "excludePinnedPosts": False,
-        # NOTE: typed `string` with no documented format. Verify in Apify
-        # Console before relying on the relative form.
-        "oldestPostDateUnified": oldest_post_date,
         "maxFollowersPerProfile": 0,
         "maxFollowingPerProfile": 0,
         "commentsPerPost": 0,
@@ -98,6 +96,16 @@ def pass_a_input(
         "aiVideoSummary": False,
         "proxyCountryCode": proxy_country_code,
     }
+
+    # Only send the date filter when one is configured. The field is typed
+    # `string` with no documented format, so an unverified value is a way to
+    # fail a paid run for nothing. With profileSorting="latest" and a small
+    # resultsPerPage you already get the most recent posts, which makes the
+    # filter redundant for short sweeps.
+    if oldest_post_date:
+        payload["oldestPostDateUnified"] = oldest_post_date
+
+    return payload
 
 
 def pass_b_input(

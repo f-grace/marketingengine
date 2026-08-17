@@ -161,3 +161,65 @@ class TestAccountMedian:
 
     def test_no_history_returns_none(self):
         assert scoring.account_median_plays([]) is None
+
+
+class TestSmoothedRate:
+    """Empirical-Bayes shrinkage. Guards against low-view posts buying a slot
+    in a paid analysis batch on the strength of a noisy rate."""
+
+    def test_low_volume_post_is_pulled_toward_the_prior(self):
+        # 8 saves on 358 views reads as 2.23% raw. The account median is 0.64%.
+        raw = scoring.save_rate(8, 358)
+        smoothed = scoring.smoothed_rate(8, 358, prior_rate=0.0064)
+        assert raw == pytest.approx(0.0223, abs=1e-4)
+        assert smoothed < raw / 1.5, "thin data was not shrunk enough"
+        assert smoothed > 0.0064, "shrunk past the prior"
+
+    def test_high_volume_post_is_barely_touched(self):
+        # 2,296 saves on 32,000 views. 500 imaginary views should not matter.
+        raw = scoring.save_rate(2296, 32_000)
+        smoothed = scoring.smoothed_rate(2296, 32_000, prior_rate=0.0255)
+        assert smoothed == pytest.approx(raw, rel=0.03)
+
+    def test_genuine_high_volume_outlier_survives(self):
+        # A real 7% save rate at scale must stay far above a 2.5% prior.
+        smoothed = scoring.smoothed_rate(2296, 32_000, prior_rate=0.0255)
+        assert smoothed > 0.06
+
+    def test_no_prior_falls_back_to_raw(self):
+        assert scoring.smoothed_rate(50, 1000, None) == pytest.approx(0.05)
+
+    def test_zero_views_does_not_divide_by_zero(self):
+        assert scoring.smoothed_rate(0, 0, prior_rate=0.01) >= 0.0
+
+    def test_monotonic_in_the_numerator(self):
+        a = scoring.smoothed_rate(10, 5000, 0.01)
+        b = scoring.smoothed_rate(100, 5000, 0.01)
+        assert b > a
+
+
+class TestLift:
+    def test_matching_the_median_is_one(self):
+        assert scoring.lift(0.05, 0.05) == pytest.approx(1.0)
+
+    def test_double_the_median(self):
+        assert scoring.lift(0.10, 0.05) == pytest.approx(2.0)
+
+    def test_missing_prior_is_neutral(self):
+        assert scoring.lift(0.10, None) == 1.0
+        assert scoring.lift(0.10, 0.0) == 1.0
+
+    def test_zero_rate_does_not_explode(self):
+        assert scoring.lift(0.0, 0.05) > 0
+
+
+class TestLogLifts:
+    def test_over_and_under_performance_are_symmetric(self):
+        over, under = scoring.log_lifts([2.0, 0.5])
+        assert over == pytest.approx(-under)
+
+    def test_normal_is_zero(self):
+        assert scoring.log_lifts([1.0]) == pytest.approx([0.0])
+
+    def test_zero_lift_is_floored_not_infinite(self):
+        assert math.isfinite(scoring.log_lifts([0.0])[0])

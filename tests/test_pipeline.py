@@ -156,6 +156,104 @@ class TestScoringPipeline:
         assert scores["small_hit"] > scores["big_dud"]
         assert report.cohort_size == 32
 
+    def test_one_account_cannot_sweep_on_engagement_style_alone(self, conn):
+        """Regression: the first live run put all 8 winners on one account.
+
+        `firmscope.co` has a structurally high save rate (3-7%) versus
+        `streetsmartcareers` (0-0.6%). Because `save_rate` and `engage_rate`
+        were scored in absolute terms while only `reach_index` was normalised,
+        70% of the composite weight sat on an account-level trait. The high-save
+        account swept every slot, including posts that underperformed its own
+        baseline.
+
+        Here `generous` saves at ~10x the rate of `stingy`, but each account has
+        one genuine standout. Both standouts must place above their own
+        stablemates.
+        """
+        items = []
+        # generous: high absolute save rate, flat performance
+        for i in range(15):
+            items.append(_item(f"g{i}", "generous", 10_000, 700, likes=500))
+        # stingy: low absolute save rate, flat performance
+        for i in range(15):
+            items.append(_item(f"s{i}", "stingy", 10_000, 70, likes=500))
+
+        # One genuine standout each: 3x their own account's usual save rate.
+        items.append(_item("generous_hit", "generous", 30_000, 6_300, likes=1_500))
+        items.append(_item("stingy_hit", "stingy", 30_000, 630, likes=1_500))
+
+        ingest.ingest_items(conn, items, [])
+        pipeline.score_and_select(conn, n_winners=4, n_losers=3, n_anomalies=2)
+
+        winners = [
+            r["tiktok_id"] for r in conn.execute(
+                "SELECT p.tiktok_id FROM post_scores s JOIN posts p ON p.id=s.post_id "
+                "WHERE s.selected_as='winner'"
+            )
+        ]
+        # The standout from the LOW-save-rate account must still make the batch.
+        assert "stingy_hit" in winners
+        assert "generous_hit" in winners
+
+        # And the batch must not be a single account's roster.
+        handles = {
+            r["handle"] for r in conn.execute(
+                "SELECT a.handle FROM post_scores s "
+                "JOIN posts p ON p.id=s.post_id JOIN accounts a ON a.id=p.account_id "
+                "WHERE s.selected_as='winner'"
+            )
+        }
+        assert len(handles) > 1, "winners came from a single account"
+
+    def test_baseline_ignores_other_formats(self, conn):
+        """Regression: carousels were scored against a video-heavy baseline.
+
+        An account posting mostly high-view video and a few lower-view carousels
+        had its carousel baseline inflated by the videos, so even a standout
+        carousel scored as an underperformer. Observed live on an account with
+        7 carousels and 13 videos.
+        """
+        items = []
+        # 13 videos at 500k. These must NOT enter the carousel baseline.
+        for i in range(13):
+            items.append(_item(f"v{i}", "mixed", 500_000, 5_000, slideshow=False))
+        # 7 carousels at ~10k, one standout at 200k.
+        for i in range(6):
+            items.append(_item(f"c{i}", "mixed", 10_000, 300, likes=600))
+        items.append(_item("carousel_hit", "mixed", 200_000, 6_000, likes=12_000))
+
+        ingest.ingest_items(conn, items, [])
+        pipeline.compute_baselines(conn)
+
+        median_plays = conn.execute(
+            "SELECT median_plays FROM account_baselines"
+        ).fetchone()["median_plays"]
+        # Median of the 7 carousels, not of all 20 posts.
+        assert median_plays == pytest.approx(10_000), (
+            f"baseline {median_plays} was polluted by video posts"
+        )
+
+        pipeline.score_and_select(conn, n_winners=2, n_losers=2, n_anomalies=1)
+        label = conn.execute(
+            "SELECT s.selected_as FROM post_scores s JOIN posts p ON p.id=s.post_id "
+            "WHERE p.tiktok_id='carousel_hit'"
+        ).fetchone()["selected_as"]
+        assert label == selection.WINNER
+
+    def test_underperforming_post_is_not_a_winner(self, conn):
+        """A post below its own account's median must never rank as a winner."""
+        items = [_item(f"n{i}", "acct", 10_000, 500, likes=800) for i in range(20)]
+        # Same account, far below its own norm on every axis.
+        items.append(_item("dud", "acct", 300, 8, likes=15))
+        ingest.ingest_items(conn, items, [])
+        pipeline.score_and_select(conn, n_winners=5, n_losers=3, n_anomalies=2)
+
+        label = conn.execute(
+            "SELECT s.selected_as FROM post_scores s JOIN posts p ON p.id=s.post_id "
+            "WHERE p.tiktok_id='dud'"
+        ).fetchone()["selected_as"]
+        assert label != selection.WINNER
+
     def test_video_posts_are_excluded_from_the_carousel_cohort(self, conn):
         items = [_item(f"c{i}", "a", 1000, 10) for i in range(12)]
         items += [_item(f"v{i}", "a", 9_999_999, 99_999, slideshow=False)

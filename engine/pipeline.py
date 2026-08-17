@@ -74,24 +74,40 @@ def _days_since(created_at: Optional[str], now: datetime) -> Optional[float]:
     return (now - dt).total_seconds() / 86400.0
 
 
-def compute_baselines(conn: sqlite3.Connection, history: int = 30) -> int:
-    """Per-account medians over that account's most recent posts.
+def compute_baselines(
+    conn: sqlite3.Connection, history: int = 30, slideshow_only: bool = True
+) -> int:
+    """Per-account medians over that account's most recent posts IN THIS FORMAT.
 
-    This is what `reach_index` divides by, and therefore the step that stops the
+    This is what every lift divides by, and therefore the step that stops the
     pipeline from simply learning that large accounts post large numbers.
+
+    `slideshow_only` matters more than it looks. The cohort being scored is
+    carousels, so the baseline has to be carousels too. Taking the median across
+    an account's videos and carousels together compares a carousel against a
+    denominator largely made of videos, and any creator whose videos outperform
+    their carousels then has every carousel look like a failure.
+
+    Observed live: an account posting 7 carousels and 13 videos had its best
+    carousel (19.6x the mixed-format median on reach) fall out of the winners
+    entirely, because the denominator was wrong.
+
+    If the pipeline ever scores video as well, `account_baselines` needs a
+    cohort column so the two formats keep separate denominators.
     """
     now_iso = _now().isoformat()
     accounts = conn.execute("SELECT id FROM accounts WHERE active = 1").fetchall()
     computed = 0
+    cohort_filter = "AND is_slideshow = 1" if slideshow_only else ""
 
     for account in accounts:
         rows = conn.execute(
-            """SELECT play_count, digg_count, comment_count, share_count,
-                      collect_count
-               FROM posts
-               WHERE account_id = ?
-               ORDER BY created_at DESC
-               LIMIT ?""",
+            f"""SELECT play_count, digg_count, comment_count, share_count,
+                       collect_count
+                FROM posts
+                WHERE account_id = ? {cohort_filter}
+                ORDER BY created_at DESC
+                LIMIT ?""",
             (account["id"], history),
         ).fetchall()
 
@@ -176,7 +192,18 @@ def score_and_select(
     recencies: List[float] = []
     shapes: List[float] = []
 
+    save_lifts: List[float] = []
+    engage_lifts: List[float] = []
+
     for p in posts:
+        baseline = baselines.get(p["account_id"])
+        median_plays = baseline["median_plays"] if baseline else None
+        median_saves = baseline["median_saves"] if baseline else None
+        median_engage = baseline["median_engage"] if baseline else None
+
+        # Raw rates for display and export; smoothed rates for ranking. A post
+        # with 8 saves on 358 views should not out-rank one with 2,296 saves on
+        # 32,000 just because 8/358 is a bigger fraction.
         save_rates.append(scoring.save_rate(p["collect_count"], p["play_count"]))
         engage_rates.append(
             scoring.engage_rate(
@@ -184,8 +211,19 @@ def score_and_select(
                 p["collect_count"], p["play_count"],
             )
         )
-        baseline = baselines.get(p["account_id"])
-        median_plays = baseline["median_plays"] if baseline else None
+
+        sr = scoring.smoothed_rate(p["collect_count"], p["play_count"], median_saves)
+        er = scoring.smoothed_rate(
+            p["digg_count"] + p["comment_count"] + p["share_count"]
+            + p["collect_count"],
+            p["play_count"], median_engage,
+        )
+
+        # Every term is normalised against the post's OWN account. Mixing a
+        # normalised reach term with absolute rate terms let one account's
+        # engagement style sweep the rankings.
+        save_lifts.append(scoring.lift(sr, median_saves))
+        engage_lifts.append(scoring.lift(er, median_engage))
         reach_indices.append(scoring.reach_index(p["play_count"], median_plays))
 
         age = _days_since(p["created_at"], now)
@@ -200,7 +238,7 @@ def score_and_select(
         )
 
     composites = scoring.composite_scores(
-        save_rates, engage_rates, reach_indices, recencies
+        save_lifts, engage_lifts, reach_indices, recencies
     )
     anomalies = scoring.anomaly_scores(shapes)
     rankable = scoring.cohort_is_rankable(len(posts))
