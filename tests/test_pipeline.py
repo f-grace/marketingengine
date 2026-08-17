@@ -1,0 +1,285 @@
+"""End-to-end test over synthetic actor output.
+
+Runs the real ingest, scoring, selection, and export code against a fabricated
+dataset shaped like clockworks/tiktok-scraper's real output. No network, no
+Apify spend, no API keys.
+
+The case that matters most is `test_small_account_outranks_large_account`: it is
+the whole reason `reach_index` exists, and the bug it guards against produces
+plausible-looking output rather than an error.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from engine import db, export, ingest, pipeline, selection
+
+
+def _item(
+    tiktok_id: str,
+    handle: str,
+    plays: int,
+    saves: int,
+    likes: int = 100,
+    comments: int = 10,
+    shares: int = 5,
+    days_ago: int = 1,
+    slideshow: bool = True,
+    slides: int = 6,
+    comment_texts=None,
+):
+    created = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return {
+        "id": tiktok_id,
+        "text": f"caption for {tiktok_id}",
+        "createTimeISO": created.isoformat(),
+        "authorMeta": {"name": handle, "fans": 10_000},
+        "playCount": plays,
+        "collectCount": saves,
+        "diggCount": likes,
+        "commentCount": comments,
+        "shareCount": shares,
+        "isSlideshow": slideshow,
+        "slideshowImageLinks": (
+            [{"downloadLink": f"https://x/{tiktok_id}/{i}.jpg"} for i in range(slides)]
+            if slideshow else []
+        ),
+        "webVideoUrl": f"https://www.tiktok.com/@{handle}/video/{tiktok_id}",
+        "musicMeta": {"musicId": "m1", "musicName": "sound"},
+        "hashtags": [{"name": "fyp"}, {"name": "niche"}],
+        "videoMeta": {"coverUrl": f"https://x/{tiktok_id}/cover.jpg"},
+        "isAd": False,
+        "comments": comment_texts or [],
+    }
+
+
+@pytest.fixture
+def conn(tmp_path):
+    c = db.connect(tmp_path / "test.db")
+    yield c
+    c.close()
+
+
+class TestIngest:
+    def test_ingests_a_clean_batch(self, conn):
+        items = [_item(f"p{i}", "creator_a", 10_000, 100) for i in range(5)]
+        report = ingest.ingest_items(conn, items, own_handles=[])
+        assert report.inserted == 5
+        assert report.skipped == 0
+        assert conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 5
+
+    def test_records_slide_images(self, conn):
+        ingest.ingest_items(conn, [_item("p1", "a", 1000, 10, slides=7)], [])
+        assert conn.execute("SELECT COUNT(*) FROM post_images").fetchone()[0] == 7
+
+    def test_rescrape_updates_metrics_without_duplicating(self, conn):
+        ingest.ingest_items(conn, [_item("p1", "a", 1_000, 10)], [])
+        ingest.ingest_items(conn, [_item("p1", "a", 50_000, 900)], [])
+
+        assert conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 1
+        row = conn.execute("SELECT play_count, collect_count FROM posts").fetchone()
+        assert row["play_count"] == 50_000
+        assert row["collect_count"] == 900
+
+    def test_own_account_is_flagged(self, conn):
+        ingest.ingest_items(conn, [_item("p1", "me", 1000, 10)], own_handles=["@me"])
+        assert conn.execute("SELECT is_own FROM accounts").fetchone()[0] == 1
+
+    # ---- shadow paths ----
+
+    def test_missing_id_is_skipped_not_fatal(self, conn):
+        items = [{"authorMeta": {"name": "a"}}, _item("ok", "a", 1000, 10)]
+        report = ingest.ingest_items(conn, items, [])
+        assert report.inserted == 1
+        assert report.reasons["missing id"] == 1
+
+    def test_missing_author_is_skipped_not_fatal(self, conn):
+        report = ingest.ingest_items(conn, [{"id": "x"}], [])
+        assert report.reasons["missing author handle"] == 1
+
+    def test_null_counts_coerce_to_zero(self, conn):
+        item = _item("p1", "a", 0, 0)
+        item["playCount"] = None
+        item["collectCount"] = None
+        report = ingest.ingest_items(conn, [item], [])
+        assert report.inserted == 1
+        assert conn.execute("SELECT play_count FROM posts").fetchone()[0] == 0
+
+    def test_junk_entries_do_not_abort_the_batch(self, conn):
+        items = ["not a dict", None, _item("good", "a", 1000, 10)]
+        report = ingest.ingest_items(conn, items, [])
+        assert report.inserted == 1
+        assert report.skipped == 2
+
+    def test_short_comments_are_filtered(self, conn):
+        item = _item("p1", "a", 1000, 10, comment_texts=[
+            {"text": "🔥", "diggCount": 5},
+            {"text": "first", "diggCount": 1},
+            {"text": "how do you handle taxes on this though", "diggCount": 40},
+        ])
+        report = ingest.ingest_items(conn, [item], [])
+        assert report.comments == 1
+        assert "taxes" in conn.execute("SELECT text FROM comments").fetchone()[0]
+
+
+class TestScoringPipeline:
+    def test_small_account_outranks_large_account(self, conn):
+        """The reason reach_index exists.
+
+        `small` normally gets 1k views and posted a 20k banger (20x).
+        `big` normally gets 500k views and posted a 200k dud (0.4x).
+        Ranking on raw plays puts the dud on top. That is the failure mode.
+        """
+        items = []
+        for i in range(15):
+            items.append(_item(f"s{i}", "small", 1_000, 10, likes=50))
+        for i in range(15):
+            items.append(_item(f"b{i}", "big", 500_000, 5_000, likes=25_000))
+
+        items.append(_item("small_hit", "small", 20_000, 600, likes=900))
+        items.append(_item("big_dud", "big", 200_000, 800, likes=9_000))
+
+        ingest.ingest_items(conn, items, [])
+        report = pipeline.score_and_select(conn, n_winners=5, n_losers=3, n_anomalies=3)
+
+        scores = {
+            r["tiktok_id"]: r["composite"]
+            for r in conn.execute(
+                "SELECT p.tiktok_id, s.composite FROM post_scores s "
+                "JOIN posts p ON p.id = s.post_id"
+            )
+        }
+        assert scores["small_hit"] > scores["big_dud"]
+        assert report.cohort_size == 32
+
+    def test_video_posts_are_excluded_from_the_carousel_cohort(self, conn):
+        items = [_item(f"c{i}", "a", 1000, 10) for i in range(12)]
+        items += [_item(f"v{i}", "a", 9_999_999, 99_999, slideshow=False)
+                  for i in range(5)]
+        ingest.ingest_items(conn, items, [])
+        report = pipeline.score_and_select(conn)
+        assert report.cohort_size == 12
+
+    def test_own_posts_excluded_from_competitor_ranking(self, conn):
+        items = [_item(f"c{i}", "rival", 1000, 10) for i in range(12)]
+        items += [_item(f"m{i}", "me", 1000, 10) for i in range(5)]
+        ingest.ingest_items(conn, items, own_handles=["me"])
+        report = pipeline.score_and_select(conn)
+        assert report.cohort_size == 12
+
+    def test_groups_never_overlap(self, conn):
+        items = [_item(f"p{i}", "a", 1000 * (i + 1), 10 * (i + 1)) for i in range(60)]
+        ingest.ingest_items(conn, items, [])
+        report = pipeline.score_and_select(conn)
+        rows = conn.execute(
+            "SELECT selected_as, COUNT(*) c FROM post_scores "
+            "WHERE selected_as IS NOT NULL GROUP BY selected_as"
+        ).fetchall()
+        counts = {r["selected_as"]: r["c"] for r in rows}
+        assert counts[selection.WINNER] == 30
+        assert counts[selection.LOSER] == 10
+        assert counts[selection.ANOMALY] == 10
+
+    def test_rescore_clears_stale_selection_labels(self, conn):
+        ingest.ingest_items(
+            conn, [_item(f"p{i}", "a", 1000 * (i + 1), 10) for i in range(40)], []
+        )
+        pipeline.score_and_select(conn, n_winners=30, n_losers=5, n_anomalies=5)
+        first = conn.execute(
+            "SELECT COUNT(*) FROM post_scores WHERE selected_as IS NOT NULL"
+        ).fetchone()[0]
+        pipeline.score_and_select(conn, n_winners=3, n_losers=2, n_anomalies=2)
+        second = conn.execute(
+            "SELECT COUNT(*) FROM post_scores WHERE selected_as IS NOT NULL"
+        ).fetchone()[0]
+        assert first == 40
+        assert second == 7
+
+    def test_thin_cohort_warns_instead_of_pretending(self, conn):
+        ingest.ingest_items(conn, [_item(f"p{i}", "a", 1000, 10) for i in range(4)], [])
+        report = pipeline.score_and_select(conn)
+        assert report.rankable is False
+        assert "below the minimum" in report.selection.note
+
+    def test_empty_store_does_not_crash(self, conn):
+        report = pipeline.score_and_select(conn)
+        assert report.cohort_size == 0
+        assert report.selection.total == 0
+
+    def test_unparseable_timestamps_are_counted_not_fatal(self, conn):
+        items = [_item(f"p{i}", "a", 1000, 10) for i in range(12)]
+        items[0]["createTimeISO"] = "not-a-date"
+        items[1]["createTimeISO"] = None
+        ingest.ingest_items(conn, items, [])
+        report = pipeline.score_and_select(conn)
+        assert report.undated_posts == 2
+        assert report.cohort_size == 12
+
+    def test_identical_posts_produce_no_nan(self, conn):
+        """Zero-variance cohort. Review finding F4, at the pipeline level."""
+        items = [_item(f"p{i}", "a", 10_000, 100, likes=200) for i in range(20)]
+        ingest.ingest_items(conn, items, [])
+        pipeline.score_and_select(conn)
+        composites = [
+            r["composite"] for r in conn.execute("SELECT composite FROM post_scores")
+        ]
+        assert all(c == c for c in composites)  # NaN != NaN
+        assert len(composites) == 20
+
+
+class TestSelectedUrls:
+    def test_returns_only_the_batch(self, conn):
+        ingest.ingest_items(
+            conn, [_item(f"p{i}", "a", 1000 * (i + 1), 10) for i in range(40)], []
+        )
+        pipeline.score_and_select(conn, n_winners=5, n_losers=2, n_anomalies=2)
+        urls = pipeline.selected_post_urls(conn)
+        assert len(urls) == 9
+        assert all(u.startswith("https://www.tiktok.com/") for u in urls)
+
+
+class TestExport:
+    def test_writes_every_view(self, conn, tmp_path):
+        ingest.ingest_items(conn, [_item(f"p{i}", "a", 1000, 10) for i in range(15)], [])
+        pipeline.score_and_select(conn)
+        written = export.to_csv(conn, tmp_path / "exports")
+        names = {p.stem for p in written}
+        assert "ranked_posts" in names
+        assert "analysis_batch" in names
+        assert "account_baselines" in names
+        for p in written:
+            assert p.exists()
+
+    def test_ranked_posts_csv_has_rows(self, conn, tmp_path):
+        ingest.ingest_items(conn, [_item(f"p{i}", "a", 1000 * (i + 1), 10)
+                                   for i in range(15)], [])
+        pipeline.score_and_select(conn)
+        export.to_csv(conn, tmp_path / "exports")
+        text = (tmp_path / "exports" / "ranked_posts.csv").read_text()
+        assert "composite" in text
+        assert len(text.strip().splitlines()) == 16  # header + 15
+
+    def test_export_on_empty_store_writes_headers_only(self, conn, tmp_path):
+        written = export.to_csv(conn, tmp_path / "exports")
+        assert len(written) == len(export.VIEWS)
+
+
+class TestIdeaStateMachine:
+    def test_happy_path(self):
+        assert db.can_transition("proposed", "approved")
+        assert db.can_transition("approved", "handed_off")
+        assert db.can_transition("handed_off", "published")
+        assert db.can_transition("published", "measured")
+
+    def test_rejected_is_terminal(self):
+        assert not db.can_transition("rejected", "approved")
+
+    def test_cannot_skip_the_human_gate(self):
+        assert not db.can_transition("proposed", "handed_off")
+
+    def test_cannot_unpublish(self):
+        assert not db.can_transition("published", "proposed")

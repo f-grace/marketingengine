@@ -1,0 +1,50 @@
+# Accounts to track.
+#
+# Copy this file to config/accounts.yml and fill it in.
+# Handles only, with or without the leading @.
+
+# Your own TikTok account.
+#
+# Add this NOW, even though analysing your own posts is a Phase 3 feature.
+# Baseline maths needs history, and history is the one thing you cannot
+# backfill later. Scraping your own account costs pennies per run and means
+# Phase 3 opens with months of data instead of zero.
+own:
+  - your_handle_here
+
+# Competitor accounts in your niche.
+#
+# Pick 8-12. Fewer than that and the carousel cohort is too thin to rank
+# (the pipeline will refuse and tell you so). Choose accounts whose AUDIENCE
+# overlaps yours, not whose product does; the point is learning what that
+# audience responds to.
+competitors:
+  - competitor_one
+  - competitor_two
+  - competitor_three
+
+scrape:
+  # Posts per account per run.
+  results_per_page: 100
+
+  # How far back to look. Format cycles turn over in roughly three weeks, so
+  # anything much older than this is archaeology.
+  # NOTE: the actor types this as a plain string without documenting the
+  # accepted format. Verify in Apify Console before trusting the relative form.
+  oldest_post_date: "60 days"
+
+  proxy_country_code: "US"
+
+  # Top-level comments pulled per post in Pass B. Replies are excluded on
+  # purpose: top-level comments are the questions your market is asking,
+  # replies are mostly commenters talking to each other, and you pay per comment.
+  top_level_comments_per_post: 30
+
+  # Analysis batch composition.
+  #
+  # The losers are not optional. Analysing only winners means every attribute
+  # they share looks predictive, including the ones every loser shares too.
+  # Without a control group "has a strong hook" reads as a success factor.
+  n_winners: 30
+  n_losers: 10
+  n_anomalies: 10

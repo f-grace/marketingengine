@@ -1,0 +1,57 @@
+{
+  "_comment": "Copy to config/brand.json. Phase 1 (scrape and score) runs without this file. Generation does not: every field here feeds the prompt that turns a winning competitor pattern into our version of it.",
+
+  "product": {
+    "name": "",
+    "what_it_does": "One plain sentence. No adjectives.",
+    "who_buys_it": "The specific person, not a segment. 'Solo Shopify owners doing under 50 orders a day', not 'SMB ecommerce'.",
+    "core_problem": "The pain they feel before they find you.",
+    "why_us": "What is true about your product that is not true about the alternatives.",
+    "proof": [
+      "Concrete claims you can actually back: numbers, named customers, guarantees."
+    ]
+  },
+
+  "audience": {
+    "sophistication": "cold | problem-aware | solution-aware | product-aware",
+    "objections": [
+      "The reasons they do not buy. These make the best carousel hooks."
+    ],
+    "vocabulary": [
+      "Words they use for their own problem. Use theirs, not yours."
+    ]
+  },
+
+  "voice": {
+    "tone": "e.g. direct, dry, no hype",
+    "person": "first | second | third",
+    "reading_level": "Aim low. Slide text is read at a scroll.",
+    "banned_phrases": [
+      "in today's fast-paced world",
+      "unlock the power of",
+      "game-changer",
+      "revolutionize",
+      "elevate your",
+      "dive into"
+    ],
+    "banned_punctuation": ["—"],
+    "rules": [
+      "No emoji in slide text.",
+      "No rhetorical questions as slide 1.",
+      "Never claim a result we cannot show."
+    ]
+  },
+
+  "format": {
+    "slide_count_range": [5, 8],
+    "max_words_per_slide": 18,
+    "cta_style": "soft_follow | link_in_bio | comment_keyword"
+  },
+
+  "guardrails": {
+    "never_mention": [
+      "Competitor names, regulated claims, anything legal has not cleared."
+    ],
+    "compliance_notes": ""
+  }
+}
