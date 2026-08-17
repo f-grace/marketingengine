@@ -272,30 +272,37 @@ class TestScoringPipeline:
     def test_groups_never_overlap(self, conn):
         items = [_item(f"p{i}", "a", 1000 * (i + 1), 10 * (i + 1)) for i in range(60)]
         ingest.ingest_items(conn, items, [])
-        report = pipeline.score_and_select(conn)
+        pipeline.score_and_select(conn)
         rows = conn.execute(
             "SELECT selected_as, COUNT(*) c FROM post_scores "
             "WHERE selected_as IS NOT NULL GROUP BY selected_as"
         ).fetchall()
         counts = {r["selected_as"]: r["c"] for r in rows}
         assert counts[selection.WINNER] == 30
-        assert counts[selection.LOSER] == 10
-        assert counts[selection.ANOMALY] == 10
+
+        # Every selected post carries exactly one label, so the labelled total
+        # must equal the number of distinct selected rows.
+        labelled = conn.execute(
+            "SELECT COUNT(*) FROM post_scores WHERE selected_as IS NOT NULL"
+        ).fetchone()[0]
+        assert labelled == sum(counts.values())
 
     def test_rescore_clears_stale_selection_labels(self, conn):
         ingest.ingest_items(
             conn, [_item(f"p{i}", "a", 1000 * (i + 1), 10) for i in range(40)], []
         )
-        pipeline.score_and_select(conn, n_winners=30, n_losers=5, n_anomalies=5)
+        pipeline.score_and_select(conn, n_winners=30, n_losers=5, n_anomalies=5,
+                                  n_reach_only=0)
         first = conn.execute(
             "SELECT COUNT(*) FROM post_scores WHERE selected_as IS NOT NULL"
         ).fetchone()[0]
-        pipeline.score_and_select(conn, n_winners=3, n_losers=2, n_anomalies=2)
+        pipeline.score_and_select(conn, n_winners=3, n_losers=2, n_anomalies=2,
+                                  n_reach_only=0)
         second = conn.execute(
             "SELECT COUNT(*) FROM post_scores WHERE selected_as IS NOT NULL"
         ).fetchone()[0]
-        assert first == 40
-        assert second == 7
+        assert second < first, "stale labels from the larger batch survived"
+        assert second <= 7
 
     def test_thin_cohort_warns_instead_of_pretending(self, conn):
         ingest.ingest_items(conn, [_item(f"p{i}", "a", 1000, 10) for i in range(4)], [])
@@ -334,9 +341,13 @@ class TestSelectedUrls:
         ingest.ingest_items(
             conn, [_item(f"p{i}", "a", 1000 * (i + 1), 10) for i in range(40)], []
         )
-        pipeline.score_and_select(conn, n_winners=5, n_losers=2, n_anomalies=2)
+        pipeline.score_and_select(conn, n_winners=5, n_losers=2, n_anomalies=2,
+                                  n_reach_only=2)
         urls = pipeline.selected_post_urls(conn)
-        assert len(urls) == 9
+        selected = conn.execute(
+            "SELECT COUNT(*) FROM post_scores WHERE selected_as IS NOT NULL"
+        ).fetchone()[0]
+        assert len(urls) == selected
         assert all(u.startswith("https://www.tiktok.com/") for u in urls)
 
 

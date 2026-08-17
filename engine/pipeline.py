@@ -43,8 +43,9 @@ class ScoreReport:
             f"cohort: {self.cohort_size} carousel posts",
             f"baselines: {self.baselines_computed} accounts",
             f"selected: {len(self.selection.winners)} winners, "
-            f"{len(self.selection.losers)} losers, "
-            f"{len(self.selection.anomalies)} anomalies",
+            f"{len(self.selection.reach_only)} reach-only, "
+            f"{len(self.selection.anomalies)} anomalies, "
+            f"{len(self.selection.losers)} losers",
         ]
         if self.undated_posts:
             lines.append(
@@ -167,6 +168,7 @@ def score_and_select(
     n_winners: int = selection.DEFAULT_N_WINNERS,
     n_losers: int = selection.DEFAULT_N_LOSERS,
     n_anomalies: int = selection.DEFAULT_N_ANOMALIES,
+    n_reach_only: int = selection.DEFAULT_N_REACH_ONLY,
     exclude_own: bool = True,
 ) -> ScoreReport:
     """Score the carousel cohort and pick the analysis batch."""
@@ -245,13 +247,18 @@ def score_and_select(
 
     candidates = [
         selection.Candidate(
-            post_id=str(p["id"]), composite=composites[i], anomaly=anomalies[i]
+            post_id=str(p["id"]),
+            composite=composites[i],
+            anomaly=anomalies[i],
+            reach=reach_indices[i],
+            engagement=engage_lifts[i],
         )
         for i, p in enumerate(posts)
     ]
     picked = selection.select(
         candidates, rankable=rankable,
         n_winners=n_winners, n_losers=n_losers, n_anomalies=n_anomalies,
+        n_reach_only=n_reach_only,
     )
 
     now_iso = now.isoformat()
@@ -261,10 +268,12 @@ def score_and_select(
         label = None
         if pid in picked.winners:
             label = selection.WINNER
-        elif pid in picked.losers:
-            label = selection.LOSER
+        elif pid in picked.reach_only:
+            label = selection.REACH_ONLY
         elif pid in picked.anomalies:
             label = selection.ANOMALY
+        elif pid in picked.losers:
+            label = selection.LOSER
 
         conn.execute(
             """INSERT OR REPLACE INTO post_scores

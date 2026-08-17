@@ -49,11 +49,19 @@ PRIOR_WEIGHT_VIEWS = 500.0
 # so a post older than that carries much less signal about what works *now*.
 RECENCY_TAU_DAYS = 21.0
 
-# Composite weights. Saves are weighted hardest because saves are the strongest
-# quality signal the carousel algorithm reads.
-W_SAVE = 0.45
-W_ENGAGE = 0.25
-W_REACH = 0.30
+# Composite weights.
+#
+# Reach is the single largest term and engagement collectively slightly larger,
+# which is the "mix of both" the operator asked for. An earlier version weighted
+# saves at 0.45 and reach at 0.30; that buried distribution under a single
+# engagement metric and pushed a post with 78x normal reach into the loser pile.
+#
+# Engagement is split across saves specifically (still the strongest quality
+# signal for carousels) and the broader like/comment/share/save rate, so a post
+# can earn its place on any form of interaction rather than saves alone.
+W_REACH = 0.45
+W_ENGAGE = 0.30
+W_SAVE = 0.25
 
 
 def save_rate(collect_count: int, play_count: int) -> float:

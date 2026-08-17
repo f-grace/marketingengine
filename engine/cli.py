@@ -168,6 +168,7 @@ def cmd_score(args) -> int:
         n_winners=settings.n_winners,
         n_losers=settings.n_losers,
         n_anomalies=settings.n_anomalies,
+        n_reach_only=settings.n_reach_only,
     )
     print("Scoring complete:")
     print(report.summary())

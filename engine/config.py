@@ -63,6 +63,7 @@ class ScrapeSettings:
     n_winners: int = 30
     n_losers: int = 10
     n_anomalies: int = 10
+    n_reach_only: int = 8
 
 
 def load_env_file(path: Optional[Path] = None) -> None:
@@ -143,6 +144,7 @@ def load_scrape_settings(path: Optional[Path] = None) -> ScrapeSettings:
         n_winners=raw.get("n_winners", defaults.n_winners),
         n_losers=raw.get("n_losers", defaults.n_losers),
         n_anomalies=raw.get("n_anomalies", defaults.n_anomalies),
+        n_reach_only=raw.get("n_reach_only", defaults.n_reach_only),
     )
 
 
