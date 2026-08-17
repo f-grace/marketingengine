@@ -101,6 +101,62 @@ def _slideshow_links(item: Dict) -> List[str]:
     return out
 
 
+MIN_COMMENT_CHARS = 15
+
+
+def ingest_comments(conn: sqlite3.Connection, rows: Iterable[Dict]) -> int:
+    """Write comment rows from the actor's separate comments dataset.
+
+    Joins to posts on the video URL. Rows for posts we never ingested are
+    dropped silently, which is correct: the comments dataset covers the whole
+    run and we only keep comments for posts in the store.
+
+    Sub-15-character comments are filtered out here rather than downstream.
+    They are emoji, tags, and "first", and paying an LLM to cluster them is
+    waste. Replies are excluded at the actor level (maxRepliesPerComment=0),
+    so everything arriving here should already be top-level.
+    """
+    now = _now()
+    url_to_post: Dict[str, int] = {}
+    for row in conn.execute("SELECT id, url FROM posts WHERE url IS NOT NULL"):
+        url_to_post[row["url"]] = row["id"]
+
+    written = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = (row.get("videoWebUrl") or row.get("submittedVideoUrl")
+               or row.get("input"))
+        post_id = url_to_post.get(url)
+        if post_id is None:
+            continue
+
+        text = (row.get("text") or "").strip()
+        if len(text) < MIN_COMMENT_CHARS:
+            continue
+
+        # cid is the platform's stable comment id; use it to avoid duplicating
+        # comments across repeated enrich runs on the same post.
+        cid = row.get("cid")
+        if cid:
+            existing = conn.execute(
+                "SELECT 1 FROM comments WHERE post_id = ? AND text = ?",
+                (post_id, text),
+            ).fetchone()
+            if existing:
+                continue
+
+        conn.execute(
+            "INSERT INTO comments (post_id, text, digg_count, scraped_at) "
+            "VALUES (?, ?, ?, ?)",
+            (post_id, text, _int(row.get("diggCount")), now),
+        )
+        written += 1
+
+    conn.commit()
+    return written
+
+
 def ingest_items(
     conn: sqlite3.Connection,
     items: Iterable[Dict],

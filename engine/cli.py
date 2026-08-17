@@ -238,17 +238,37 @@ def cmd_enrich(args) -> int:
 
     report = ingest.ingest_items(conn, result.items, accounts.own, run_row_id)
     print(f"  enriched: {report.summary()}")
+
+    # Comments live in a SEPARATE dataset the actor writes them to; they are
+    # not embedded in the post items.
+    comment_rows = apify.fetch_comments(result.items)
+    written = ingest.ingest_comments(conn, comment_rows)
+    print(f"  comments: {written} kept of {len(comment_rows)} scraped "
+          f"(shorter than {ingest.MIN_COMMENT_CHARS} chars filtered out)")
     conn.close()
     return 0
 
 
 def cmd_export(args) -> int:
+    from . import briefs
+
     conn = _open_db()
     written = export.to_csv(conn, config.EXPORT_DIR)
     print(f"Wrote {len(written)} CSVs to "
           f"{config.EXPORT_DIR.relative_to(config.ROOT)}/")
     for p in written:
         print(f"  {p.name}")
+
+    triage = export.triage_csv(conn, config.EXPORT_DIR)
+    if triage:
+        print(f"  {triage.name}  (idea triage)")
+
+    brief_paths = briefs.export_briefs(conn, config.EXPORT_DIR / "briefs")
+    if brief_paths:
+        print(f"Wrote {len(brief_paths)} content briefs to "
+              f"{(config.EXPORT_DIR / 'briefs').relative_to(config.ROOT)}/")
+        for p in brief_paths:
+            print(f"  {p.name}")
 
     url = export.to_sheets(conn, args.sheet_name)
     if url:

@@ -100,6 +100,22 @@ def _fetch(conn: sqlite3.Connection, sql: str) -> Tuple[List[str], List[tuple]]:
     return headers, cur.fetchall()
 
 
+def triage_csv(conn: sqlite3.Connection, out_dir: Path) -> Optional[Path]:
+    """The idea triage tab: one row per idea, for scanning and approving."""
+    from . import briefs
+
+    rows = briefs.triage_rows(conn)
+    if not rows:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "idea_triage.csv"
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
 def to_csv(conn: sqlite3.Connection, out_dir: Path) -> List[Path]:
     """Write one CSV per view. Always available, no credentials needed."""
     out_dir.mkdir(parents=True, exist_ok=True)
