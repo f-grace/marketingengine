@@ -280,6 +280,54 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_render(args) -> int:
+    """Render slide PNGs for an idea."""
+    import json as _json
+    from . import render
+
+    conn = _open_db()
+    if args.idea:
+        rows = conn.execute(
+            "SELECT id, concept, slide_outline_json FROM ideas WHERE id LIKE ?",
+            (args.idea + "%",),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, concept, slide_outline_json FROM ideas ORDER BY created_at"
+        ).fetchall()
+
+    if not rows:
+        print("No matching ideas. Run `python -m engine export` to list them.")
+        conn.close()
+        return 1
+
+    from . import imagery
+    if not imagery.pexels_key():
+        print("  NOTE: PEXELS_API_KEY not set, using gradient grounds.")
+        print("        Free key at pexels.com/api gives real photography.")
+
+    total = 0
+    for row in rows:
+        slides = _json.loads(row["slide_outline_json"] or "[]")
+        if not slides:
+            continue
+        specs = [
+            render.SlideSpec(index=s.get("slide", i + 1), role=s.get("role", ""),
+                             text=s.get("text", ""))
+            for i, s in enumerate(slides)
+        ]
+        slug = "".join(ch if ch.isalnum() or ch in "-_" else "-"
+                       for ch in (row["concept"] or "idea").lower())[:50].strip("-")
+        out_dir = config.EXPORT_DIR / "slides" / f"{slug}-{row['id'][:8]}"
+        paths = render.render_deck(specs, out_dir)
+        total += len(paths)
+        print(f"  {len(paths):2} slides  {out_dir.relative_to(config.ROOT)}")
+
+    print(f"\nRendered {total} slides.")
+    conn.close()
+    return 0
+
+
 def cmd_status(args) -> int:
     if not config.DB_PATH.exists():
         print("No store yet. Run `python -m engine init`.")
@@ -343,6 +391,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Pass B: comments and slide images for the batch")
     sub.add_parser("status", parents=[common],
                    help="what is in the store right now")
+
+    rnd = sub.add_parser("render", parents=[common],
+                         help="render slide PNGs for ideas")
+    rnd.add_argument("--idea", default=None,
+                     help="idea id prefix; omit to render all")
     sub.add_parser("run", parents=[common],
                    help="scrape -> score -> enrich -> export")
 
@@ -360,6 +413,7 @@ COMMANDS = {
     "enrich": cmd_enrich,
     "export": cmd_export,
     "status": cmd_status,
+    "render": cmd_render,
     "run": cmd_run,
 }
 
