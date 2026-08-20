@@ -328,6 +328,66 @@ def cmd_render(args) -> int:
     return 0
 
 
+def cmd_publish(args) -> int:
+    """Send a rendered deck to TikTok drafts via Upload-Post."""
+    import json as _json
+    from . import publish
+
+    conn = _open_db()
+    where = "WHERE id LIKE ?" if args.idea else ""
+    params = (args.idea + "%",) if args.idea else ()
+    rows = conn.execute(
+        f"SELECT id, concept, caption_draft, hashtags_json, slide_outline_json "
+        f"FROM ideas {where} ORDER BY created_at", params,
+    ).fetchall()
+
+    if not rows:
+        print("No matching ideas.")
+        conn.close()
+        return 1
+
+    mode = publish.DIRECT if args.direct else publish.DRAFT
+    sent = 0
+    for row in rows:
+        idea = dict(row)
+        if publish.already_handed_off(conn, idea["id"]) and not args.force:
+            print(f"  skip  {idea['id'][:8]}  already handed off (--force to resend)")
+            continue
+
+        slug = "".join(ch if ch.isalnum() or ch in "-_" else "-"
+                       for ch in (idea["concept"] or "idea").lower())[:50].strip("-")
+        deck_dir = config.EXPORT_DIR / "slides" / f"{slug}-{idea['id'][:8]}"
+        slides = sorted(deck_dir.glob("slide-*.png"))
+        if not slides:
+            print(f"  skip  {idea['id'][:8]}  no rendered slides in {deck_dir.name}")
+            continue
+
+        caption = publish.caption_for(idea)
+        print(f"\n  {idea['concept']}")
+        print(f"    {len(slides)} slides -> TikTok {'DRAFTS' if mode == publish.DRAFT else 'LIVE ACCOUNT'}")
+        print(f"    caption: {caption[:90]}...")
+
+        if not _confirm("    Send?", args.yes):
+            print("    skipped.")
+            continue
+
+        try:
+            body = publish.upload_deck(slides, caption, mode=mode,
+                                       allow_direct=args.direct)
+        except publish.PublishError as exc:
+            print(f"    ERROR: {exc}")
+            continue
+
+        ref = str(body.get("id") or body.get("request_id") or "")
+        publish.record_handoff(conn, idea["id"], ref or None)
+        sent += 1
+        print(f"    sent. ref={ref or '(none returned)'}")
+
+    print(f"\n{sent} deck(s) sent. Open TikTok and check your inbox/drafts.")
+    conn.close()
+    return 0
+
+
 def cmd_status(args) -> int:
     if not config.DB_PATH.exists():
         print("No store yet. Run `python -m engine init`.")
@@ -396,6 +456,14 @@ def build_parser() -> argparse.ArgumentParser:
                          help="render slide PNGs for ideas")
     rnd.add_argument("--idea", default=None,
                      help="idea id prefix; omit to render all")
+
+    pub = sub.add_parser("publish", parents=[common],
+                         help="send rendered decks to TikTok drafts")
+    pub.add_argument("--idea", default=None, help="idea id prefix; omit for all")
+    pub.add_argument("--force", action="store_true",
+                     help="resend even if already handed off")
+    pub.add_argument("--direct", action="store_true",
+                     help="DANGER: publish live instead of to drafts")
     sub.add_parser("run", parents=[common],
                    help="scrape -> score -> enrich -> export")
 
@@ -414,6 +482,7 @@ COMMANDS = {
     "export": cmd_export,
     "status": cmd_status,
     "render": cmd_render,
+    "publish": cmd_publish,
     "run": cmd_run,
 }
 
@@ -423,6 +492,9 @@ def main(argv: Optional[list] = None) -> int:
     args = parser.parse_args(argv)
     # Both are SUPPRESS-or-absent depending on where the flag landed.
     args.yes = getattr(args, "yes", False)
+    for attr, default in (("idea", None), ("force", False), ("direct", False)):
+        if not hasattr(args, attr):
+            setattr(args, attr, default)
     if not hasattr(args, "sheet_name"):
         args.sheet_name = "TikTok Content Intelligence"
     try:
