@@ -34,13 +34,12 @@ Then:
 ./.venv/bin/python -m engine enrich    # Pass B: comments + slide images
 ./.venv/bin/python -m engine export    # CSVs, briefs, idea triage
 ./.venv/bin/python -m engine render    # slide PNGs, $0 each
-./.venv/bin/python -m engine publish   # send decks to TikTok drafts
 ./.venv/bin/python -m engine status    # what is in the store
 ```
 
-`publish` sends to TikTok **drafts** (`MEDIA_UPLOAD`), never live. You finish and
-post in the app. `--direct` publishes for real and is deliberately awkward to
-reach: it is the only irreversible action in the system.
+The engine stops at rendered slides and written briefs. Posting is deliberately
+out of scope: you review the deck and upload it yourself, which is the right
+shape while the account is new and one bad post costs distribution.
 
 Or the lot: `python -m engine run`
 
@@ -87,7 +86,6 @@ engine/
   config.py      accounts, scrape settings, brand, secrets from env only
   render.py      slide PNGs: stock photo + outlined type, drawn not generated
   imagery.py     Pexels backgrounds, cached; gradient fallback with no key
-  publish.py     Upload-Post client, draft mode by default
   briefs.py      slide-by-slide content briefs
   cli.py         command line
 config/          .example files are tracked; your filled-in copies are not
@@ -103,7 +101,7 @@ access, which is why the analytical core is cheap to test.
 ./.venv/bin/python -m pytest tests/ -q
 ```
 
-153 tests, no network calls, no API keys needed. The integration tests run real
+141 tests, no network calls, no API keys needed. The integration tests run real
 ingest, scoring, and export against synthetic actor output.
 
 Worth knowing about two of them:
