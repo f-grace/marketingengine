@@ -77,77 +77,65 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Both templates ask for a CLOSE recreation with light tweaks, on purpose.
+# The scraped post is the proven artifact; the more room the prompt gives a
+# generator to "reimagine", the more the output drifts into generic AI-looking
+# design and away from what actually performed.
 _OWN_TASK = """\
 ## Task
-Look at the attached image. It is one of OUR OWN posts and it beat our
-account's baseline. Create ONE new single-image TikTok photo post that is a
-fresh variant of it:
-- KEEP: the layout, hook structure, text hierarchy, information density, and
-  overall visual mood. They are what worked.
-- CHANGE: reword every line so it reads fresh rather than reposted (same idea,
-  new phrasing). Swap any logos, watermarks, or branding for new styling.
-  Vary the background or imagery.
-- Output: one vertical image, 1080x1440 (3:4), with every word legible at
-  phone-scroll size."""
+Recreate the attached image. It is one of our own posts and it performed, so
+stay close to it. Only these changes:
+- Keep the layout, colors, fonts, composition, and text structure the same.
+- Reword each line just enough that it reads fresh instead of reposted. Same
+  meaning, same length, same tone.
+- Swap any logo or watermark for our current branding. Change nothing else.
+- Do not redesign, add, or "improve" anything.
+- Output: one vertical image, 1080x1440 (3:4), text legible at phone-scroll
+  size."""
 
 _SOURCE_TASK = """\
 ## Task
-Look at the attached image. It is a high-performing single-image post from
-another account in our niche. Recreate the CONCEPT as an original post for us:
-- Take the underlying idea, the hook shape, and the structure that made it
-  work.
-- Do NOT copy any sentence verbatim; rewrite everything in the voice described
-  below.
-- Remove every trace of the original account: handle, watermark, logo, color
-  scheme, and any distinctive layout tells.
-- Output: one vertical image, 1080x1440 (3:4), with every word legible at
-  phone-scroll size."""
+Recreate the attached image as closely as possible. It performed as-is, so
+stay close to it. Only these changes:
+- Remove the original account's handle, watermark, and logo.
+- Keep the layout, colors, fonts, composition, and text structure the same.
+- Reword the text lightly so it is not a word-for-word copy. Same meaning,
+  same length, same tone.
+- Do not redesign, add, or "improve" anything.
+- Output: one vertical image, 1080x1440 (3:4), text legible at phone-scroll
+  size."""
 
 
 def _brand_rules(brand: Dict) -> str:
-    """The shared footer, built from brand.json with safe defaults."""
+    """A short footer of hard constraints, built from brand.json.
+
+    Deliberately minimal. The old footer pasted the whole voice guide, which
+    steered generators toward rewriting everything "in our voice" — the
+    opposite of a close recreation. Only the non-negotiables survive here.
+    """
     voice = brand.get("voice") or {}
-    fmt = brand.get("format") or {}
     guardrails = brand.get("guardrails") or {}
     phase = brand.get("phase") or {}
 
-    lines = ["## Brand rules (every one must hold)"]
-
-    tone = voice.get("tone")
-    if tone:
-        lines.append(f"Voice: {tone}. Written in the second person. "
-                     "Low reading level: the text is read at a scroll.")
+    lines = ["## Rules"]
 
     if not phase.get("product_mentions_allowed", True):
-        lines.append(
-            "PHASE RULE: no product mention of any kind. No CTA, no 'link in "
-            "bio', no company name. The image must be fully useful to someone "
-            "who never clicks anything."
-        )
+        lines.append("- No product or company mention, no CTA, no 'link in "
+                     "bio'.")
 
     banned = voice.get("banned_phrases") or []
     if banned:
-        lines.append("Never use these phrases: " + ", ".join(banned) + ".")
+        lines.append("- When rewording, write plainly. Never use: "
+                     + ", ".join(banned) + ".")
 
     banned_punct = voice.get("banned_punctuation") or []
     if banned_punct:
-        lines.append("Never use these characters: "
+        lines.append("- Never use: "
                      + " ".join(repr(c) for c in banned_punct) + ".")
-
-    rules = voice.get("rules") or []
-    if rules:
-        lines.append("Rules:")
-        lines.extend(f"- {r}" for r in rules)
 
     never = guardrails.get("never_mention") or []
     if never:
-        lines.append("Never mention:")
-        lines.extend(f"- {n}" for n in never)
-
-    max_words = fmt.get("max_words_per_slide")
-    if max_words:
-        lines.append(f"Keep any block of on-image text to at most {max_words} "
-                     "words.")
+        lines.append("- Never mention: " + "; ".join(never) + ".")
 
     return "\n".join(lines)
 

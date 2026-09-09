@@ -62,31 +62,43 @@ class TestPathway:
 
 
 class TestBuildPrompt:
-    def test_own_pathway_keeps_layout_and_swaps_branding(self):
+    """Both pathways ask for a CLOSE recreation with light tweaks — the
+    scraped post is the proven artifact, so the prompt must never invite a
+    generator to reimagine it into generic AI-looking design."""
+
+    def test_own_pathway_stays_close_and_swaps_branding(self):
         text = prompts.build_prompt(_source(is_own=True), BRAND)
-        assert "OUR OWN" in text
-        assert "KEEP: the layout" in text
-        assert "Swap any logos" in text
+        assert "one of our own posts" in text
+        assert "Keep the layout, colors, fonts, composition" in text
+        assert "our current branding" in text
         assert prompts.OWN_REBRAND in text
 
-    def test_source_pathway_strips_the_original_account(self):
+    def test_source_pathway_stays_close_and_strips_the_account(self):
         text = prompts.build_prompt(_source(is_own=False), BRAND)
-        assert "Recreate the CONCEPT" in text
-        assert "Do NOT copy any sentence verbatim" in text
-        assert "Remove every trace of the original account" in text
+        assert "as closely as possible" in text
+        assert "Remove the original account's handle, watermark, and logo" in text
+        assert "not a word-for-word copy" in text
         assert prompts.SOURCE_RECREATE in text
 
-    def test_brand_rules_are_injected(self):
+    def test_both_pathways_forbid_redesign(self):
+        for is_own in (True, False):
+            text = prompts.build_prompt(_source(is_own=is_own), BRAND)
+            assert 'Do not redesign, add, or "improve" anything.' in text
+
+    def test_rules_are_minimal_but_present(self):
         text = prompts.build_prompt(_source(is_own=False), BRAND)
         assert "game-changer" in text
-        assert "no product mention of any kind" in text
+        assert "No product or company mention" in text
         assert "Competitor product names" in text
-        assert "at most 18 words" in text
+        # The full voice guide must NOT be pasted in: it steers generators
+        # toward rewriting everything instead of recreating closely.
+        assert "No emoji in slide text." not in text
+        assert "at most 18 words" not in text
 
     def test_phase_rule_absent_when_mentions_allowed(self):
         brand = dict(BRAND, phase={"product_mentions_allowed": True})
         text = prompts.build_prompt(_source(is_own=False), brand)
-        assert "no product mention of any kind" not in text
+        assert "No product or company mention" not in text
 
     def test_image_and_metrics_are_referenced(self):
         text = prompts.build_prompt(_source(is_own=False), BRAND)
