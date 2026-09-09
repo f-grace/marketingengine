@@ -5,14 +5,14 @@
         ├─ per-account baselines   median plays / saves / engagement / shape
         │
         ▼
-    carousel cohort only          isSlideshow == true
-        │                          mixing video and photo posts into one
-        │                          distribution makes every statistic meaningless
+    single-image cohort only      isSlideshow == true AND exactly 1 image
+        │                          mixing formats into one distribution makes
+        │                          every statistic meaningless
         ▼
     scores                        rates -> reach_index -> z -> composite
         │
         ▼
-    selection                     winners + losers + anomalies
+    selection                     winners + reach-only
 
 Everything numeric here delegates to `scoring`, which is pure and tested. This
 module's job is only to move rows in and out of SQLite.
@@ -27,7 +27,12 @@ from typing import Dict, List, Optional
 
 from . import scoring, selection
 
-COHORT_SLIDESHOW = "slideshow"
+COHORT_SINGLE_IMAGE = "single_image"
+
+# The cohort filter. `slide_count = 1` also excludes slideshows whose image
+# links the actor failed to return (slide_count = 0): an unknown image count
+# is not "one".
+_SINGLE_IMAGE_FILTER = "is_slideshow = 1 AND slide_count = 1"
 
 
 @dataclass
@@ -40,7 +45,7 @@ class ScoreReport:
 
     def summary(self) -> str:
         lines = [
-            f"cohort: {self.cohort_size} carousel posts",
+            f"cohort: {self.cohort_size} single-image posts",
             f"baselines: {self.baselines_computed} accounts",
             f"selected: {len(self.selection.winners)} winners, "
             f"{len(self.selection.reach_only)} reach-only, "
@@ -76,30 +81,32 @@ def _days_since(created_at: Optional[str], now: datetime) -> Optional[float]:
 
 
 def compute_baselines(
-    conn: sqlite3.Connection, history: int = 30, slideshow_only: bool = True
+    conn: sqlite3.Connection, history: int = 30, single_image_only: bool = True
 ) -> int:
     """Per-account medians over that account's most recent posts IN THIS FORMAT.
 
     This is what every lift divides by, and therefore the step that stops the
     pipeline from simply learning that large accounts post large numbers.
 
-    `slideshow_only` matters more than it looks. The cohort being scored is
-    carousels, so the baseline has to be carousels too. Taking the median across
-    an account's videos and carousels together compares a carousel against a
-    denominator largely made of videos, and any creator whose videos outperform
-    their carousels then has every carousel look like a failure.
+    `single_image_only` matters more than it looks. The cohort being scored is
+    single-image photo posts, so the baseline has to be the same format. Taking
+    the median across an account's videos, carousels, and single images together
+    compares a single image against a denominator made of other formats, and any
+    creator whose videos outperform their photos then has every photo post look
+    like a failure.
 
-    Observed live: an account posting 7 carousels and 13 videos had its best
-    carousel (19.6x the mixed-format median on reach) fall out of the winners
-    entirely, because the denominator was wrong.
+    Observed live (in the carousel era of this pipeline): an account posting 7
+    carousels and 13 videos had its best carousel (19.6x the mixed-format median
+    on reach) fall out of the winners entirely, because the denominator was
+    wrong.
 
-    If the pipeline ever scores video as well, `account_baselines` needs a
-    cohort column so the two formats keep separate denominators.
+    If the pipeline ever scores a second format again, `account_baselines`
+    needs a cohort column so the formats keep separate denominators.
     """
     now_iso = _now().isoformat()
     accounts = conn.execute("SELECT id FROM accounts WHERE active = 1").fetchall()
     computed = 0
-    cohort_filter = "AND is_slideshow = 1" if slideshow_only else ""
+    cohort_filter = f"AND {_SINGLE_IMAGE_FILTER}" if single_image_only else ""
 
     for account in accounts:
         rows = conn.execute(
@@ -169,9 +176,14 @@ def score_and_select(
     n_losers: int = selection.DEFAULT_N_LOSERS,
     n_anomalies: int = selection.DEFAULT_N_ANOMALIES,
     n_reach_only: int = selection.DEFAULT_N_REACH_ONLY,
-    exclude_own: bool = True,
+    exclude_own: bool = False,
 ) -> ScoreReport:
-    """Score the carousel cohort and pick the analysis batch."""
+    """Score the single-image cohort and pick the recreation batch.
+
+    Own posts are IN the cohort by default: a winner from our own account gets
+    an `own_rebrand` prompt, a winner from a source account a `source_recreate`
+    one. The pathway split happens downstream from `accounts.is_own`, not here.
+    """
     baselines_computed = compute_baselines(conn)
     baselines = _latest_baselines(conn)
     now = _now()
@@ -180,7 +192,8 @@ def score_and_select(
     posts = conn.execute(
         f"""SELECT p.*, a.is_own
             FROM posts p JOIN accounts a ON a.id = p.account_id
-            WHERE p.is_slideshow = 1 AND p.is_ad = 0 {own_filter}"""
+            WHERE p.is_slideshow = 1 AND p.slide_count = 1 AND p.is_ad = 0
+              {own_filter}"""
     ).fetchall()
 
     if not posts:
@@ -283,7 +296,7 @@ def score_and_select(
             (
                 p["id"], now_iso, save_rates[i], engage_rates[i],
                 reach_indices[i], shapes[i], anomalies[i], recencies[i],
-                composites[i], COHORT_SLIDESHOW, label,
+                composites[i], COHORT_SINGLE_IMAGE, label,
             ),
         )
     conn.commit()
@@ -297,11 +310,17 @@ def score_and_select(
     )
 
 
-def selected_post_urls(conn: sqlite3.Connection) -> List[str]:
-    """URLs of the current analysis batch, for the Pass B enrichment run."""
-    rows = conn.execute(
-        """SELECT p.url FROM posts p
+def selected_posts(conn: sqlite3.Connection) -> List[sqlite3.Row]:
+    """The current recreation batch: one row per selected post.
+
+    Consumed by enrich (image download) and prompts (generation). Ordered
+    best-first so partial failures hit the weakest picks last.
+    """
+    return conn.execute(
+        """SELECT p.id, p.tiktok_id, p.url, a.is_own, s.selected_as
+           FROM posts p
            JOIN post_scores s ON s.post_id = p.id
-           WHERE s.selected_as IS NOT NULL AND p.url IS NOT NULL"""
+           JOIN accounts a    ON a.id = p.account_id
+           WHERE s.selected_as IS NOT NULL
+           ORDER BY s.composite DESC"""
     ).fetchall()
-    return [r["url"] for r in rows]

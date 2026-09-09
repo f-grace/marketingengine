@@ -1,10 +1,22 @@
-# TikTok Content Intelligence Pipeline
+# TikTok Recreation-Prompt Engine
 
-Scrapes competitor TikTok accounts, works out what is actually working and why,
-and selects the posts worth analysing. Feeds concepts into your existing
-slideshow generation system.
+Scrapes your own TikTok account and the idea-source accounts in your niche,
+finds the single-image photo posts that beat their creator's baseline, and
+emails you a paste-ready recreation prompt (plus the source image) for each
+one. You feed the prompt and image to your own multimodal LLM / image tool;
+this engine deliberately contains no LLM of its own.
 
-Full design, cost model, and open questions: [PLAN.md](PLAN.md).
+Two pathways, decided by who posted the winner:
+
+- **`own_rebrand`** — one of *your* posts beat your baseline: the prompt asks
+  for a fresh variant (keep the layout and hook, reword everything, swap
+  logos/branding).
+- **`source_recreate`** — a source account's post went viral: the prompt asks
+  for the concept rebuilt in your voice with every trace of the original
+  account stripped.
+
+Historical design notes and the cost model: [PLAN.md](PLAN.md) (describes the
+earlier carousel-analysis incarnation; the scoring model is unchanged).
 
 ## Setup
 
@@ -21,39 +33,56 @@ Then:
 1. Put your Apify token in `.env` (get one at
    [console.apify.com/settings/integrations](https://console.apify.com/settings/integrations)).
    It is read from the environment only and never written to the store.
-2. List your own handle and competitors in `config/accounts.yml`. Start with
-   2-3 to validate cheaply; the actor bills ~$3.70/1k results against a $5/month
-   free tier, so a full 10-account sweep is most of a month's credit.
-3. Fill in `config/brand.json` when you get to generation. Phase 1 runs without it.
+2. For email delivery, set `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, and
+   `DIGEST_TO` in `.env`. The password is a Google App Password (Google
+   Account → Security → 2-Step Verification → App passwords; 2-Step
+   Verification must be on). Without these, prompts stay on disk under
+   `data/exports/prompts/`.
+3. List your own handle under `own:` and idea-source accounts under `sources:`
+   in `config/accounts.yml`. The actor bills ~$3.70/1k results against a
+   $5/month free tier, so start narrow.
+4. Keep `config/brand.json` honest — its voice, guardrails, and phase rules
+   are pasted into every recreation prompt.
 
 ## Use
 
 ```bash
-./.venv/bin/python -m engine scrape    # Pass A: wide sweep, ~$3.70 per 1k results
-./.venv/bin/python -m engine score     # baselines, scores, pick the batch
-./.venv/bin/python -m engine enrich    # Pass B: comments + slide images
-./.venv/bin/python -m engine export    # CSVs, briefs, idea triage
-./.venv/bin/python -m engine render    # slide PNGs, $0 each
-./.venv/bin/python -m engine status    # what is in the store
+./.venv/bin/python -m engine run --yes   # the whole thing:
+                                         # scrape -> score -> enrich -> prompts -> email
 ```
 
-The engine stops at rendered slides and written briefs. Posting is deliberately
-out of scope: you review the deck and upload it yourself, which is the right
-shape while the account is new and one bad post costs distribution.
+Or step by step:
 
-Or the lot: `python -m engine run`
+```bash
+./.venv/bin/python -m engine scrape             # Pass A wide sweep. The only step that costs money.
+./.venv/bin/python -m engine score              # baselines + scores over single-image posts, pick winners
+./.venv/bin/python -m engine enrich             # download each winner's image (free, direct from CDN)
+./.venv/bin/python -m engine prompts            # write one recreation prompt .md per new winner
+./.venv/bin/python -m engine prompts --dry-run  # preview to stdout, write nothing
+./.venv/bin/python -m engine email              # send unemailed prompts + images to DIGEST_TO
+./.venv/bin/python -m engine email --dry-run    # show what would be sent
+./.venv/bin/python -m engine export             # CSV views of the store
+./.venv/bin/python -m engine status             # what is in the store
+```
 
-`scrape` and `enrich` cost money. Both print an estimate and ask before calling
-the actor. Pass `--yes` to skip the prompt (works before or after the
-subcommand).
+`scrape` prints a cost estimate and asks before calling the actor; pass
+`--yes` to skip the prompt (before or after the subcommand). Everything else
+is free and local.
+
+Timing matters for `enrich`: TikTok's CDN image URLs are signed and expire
+within hours, which is why `run` downloads immediately after scraping and why
+the *file* (not the URL) is what gets attached to the email. If direct CDN
+downloads ever start failing consistently, the actor can rehost images on
+Apify storage (see the contingency note in `engine/apify.py`).
 
 ## How it works
 
 ```
-  scrape ──> baseline ──> score ──> select ──> enrich ──> export
-             per-creator  save-rate  winners   comments   CSV +
-             medians      weighted   losers    + slide    Sheets
-                                     anomalies  images
+  scrape ──> baseline ──> score ──> select ──> enrich ──> prompts ──> email
+             per-creator  save-rate  winners +  image     one .md     digest +
+             medians over weighted   reach-only download  per winner  attachments
+             single-image
+             posts only
 ```
 
 Three ideas do the heavy lifting:
@@ -63,37 +92,38 @@ normally gets, not against absolute numbers. 40k views on an account averaging
 8k is a hit; 200k on an account averaging 400k is a flop. Ranking on raw views
 gets both backwards, and that is the most common failure in competitor scraping.
 
-**A control group.** The analysis batch is 30 winners, 10 losers, and 10
-anomalies. Without the losers, every attribute winners share looks predictive,
-including the ones losers share too.
+**One format, one denominator.** Only single-image photo posts are scored, and
+each account's baseline is computed over its single-image posts only. Mixing
+videos or multi-slide carousels into the denominator makes every statistic
+meaningless (observed live in this pipeline's carousel era).
 
-**Two-pass scraping.** Comments and image downloads are per-post multipliers on
-billed results. Pass A sweeps wide and cheap; Pass B enriches only the ~50 posts
-that made the batch. Applying enrichment to all 1,000 is the difference between
-a $0.56 validation run and a $9+ one.
+**Idempotent output.** Each winning post gets at most one prompt ever
+(`recreation_prompts.post_id` is UNIQUE), and `emailed_at` is stamped only
+after a successful send — so reruns never duplicate work or emails, and a
+failed send just leaves prompts queued for the next `engine email`.
 
 ## Layout
 
 ```
 engine/
   scoring.py     pure math: rates, reach index, z-scores, recency. No I/O.
-  selection.py   pure: winners / losers / anomalies, guaranteed disjoint
+  selection.py   pure: winners / reach-only, guaranteed disjoint
   pipeline.py    baselines, scoring, selection against the store
-  apify.py       actor client, Pass A and Pass B input builders
+  apify.py       actor client, Pass A input builder, cost guardrails
   ingest.py      actor output -> rows, tolerant of missing and malformed fields
-  db.py          SQLite schema, idea state machine
-  export.py      CSV always, Google Sheets when credentials exist
+  prompts.py     recreation-prompt templates (pure) + generation/dedupe
+  notify.py      Gmail digest: build + send, stdlib SMTP only
+  db.py          SQLite schema
+  export.py      CSV views
   config.py      accounts, scrape settings, brand, secrets from env only
-  render.py      slide PNGs: stock photo + outlined type, drawn not generated
-  imagery.py     Pexels backgrounds, cached; gradient fallback with no key
-  briefs.py      slide-by-slide content briefs
   cli.py         command line
 config/          .example files are tracked; your filled-in copies are not
-data/            store, raw datasets, exports. Gitignored.
+data/            store, raw datasets, images, prompts. Gitignored.
 ```
 
-`scoring.py` and `selection.py` are pure functions with no database or network
-access, which is why the analytical core is cheap to test.
+`scoring.py`, `selection.py`, and `prompts.build_prompt` are pure functions
+with no database or network access, which is why the analytical core is cheap
+to test.
 
 ## Tests
 
@@ -101,8 +131,9 @@ access, which is why the analytical core is cheap to test.
 ./.venv/bin/python -m pytest tests/ -q
 ```
 
-141 tests, no network calls, no API keys needed. The integration tests run real
-ingest, scoring, and export against synthetic actor output.
+149 tests, no network calls, no API keys needed. The integration tests run real
+ingest, scoring, prompt generation, and export against synthetic actor output;
+SMTP is monkeypatched, never dialled.
 
 Worth knowing about two of them:
 
@@ -111,13 +142,13 @@ Worth knowing about two of them:
 - `test_identical_posts_produce_no_nan` guards zero-variance z-scores, which
   otherwise emit NaN that propagates silently downstream.
 
-## Status
+## Caveats
 
-Phase 1 (scrape, score, select, export) is built and tested. Phase 2 (AI
-analysis, clustering, winner-vs-loser contrast, generation, human gate) has its
-schema in place but no code yet. Phase 3 (own-post feedback loop) depends on the
-UUID handoff contract described in PLAN.md section 3.
-
-Before a first real run, verify two things in Apify Console that the actor README
-leaves undocumented: the allowed values for `profileSorting`, and the accepted
-format of `oldestPostDateUnified`.
+- The single-image cohort is a subset of what accounts post. If scoring warns
+  that the cohort is below the minimum for reliable ranking, raise
+  `results_per_page` or add more `sources:` accounts.
+- Scraped captions are third-party text; each prompt labels them as reference
+  material so instruction-shaped captions are less likely to steer your LLM.
+- Before a first real run, verify in Apify Console the two undocumented actor
+  fields: allowed values for `profileSorting`, and the accepted format of
+  `oldestPostDateUnified`.

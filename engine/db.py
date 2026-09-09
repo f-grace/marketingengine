@@ -1,20 +1,15 @@
 """SQLite store and schema.
 
-SQLite is the system of record; Google Sheets is a generated view of it. The
-reason is the relational chain, which Sheets cannot join across:
+SQLite is the system of record. The relational chain the engine cares about:
 
-    posts ─> post_scores ─> analyses ─> clusters ─> ideas ─> publications
-                                                      │           │
-                                                      └── UUID ───┘
-                                                   the handoff join key
+    accounts ─> posts ─> post_scores ─> recreation_prompts
+                  │
+                  └─> post_images (single image + local download)
 
-The whole point of Phase 3 is following that chain from a published post back to
-the pattern that produced it. `ideas.id` is a UUID assigned before handoff and
-returned attached to the published URL; without it the feedback loop cannot
-exist. See PLAN.md section 3.
-
-Phase 2 and 3 tables are created up front even though nothing writes to them
-yet, so there is no migration step later.
+A post that scores as a winner gets exactly one recreation prompt
+(`recreation_prompts.post_id` is UNIQUE), which is also what makes reruns
+idempotent: a post that already has a prompt is skipped, and `emailed_at`
+records whether that prompt has left the machine yet.
 """
 
 from __future__ import annotations
@@ -29,7 +24,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS accounts (
     id          INTEGER PRIMARY KEY,
     handle      TEXT NOT NULL UNIQUE,
-    is_own      INTEGER NOT NULL DEFAULT 0,   -- our account vs a competitor
+    is_own      INTEGER NOT NULL DEFAULT 0,   -- our account vs an idea source
     active      INTEGER NOT NULL DEFAULT 1,
     added_at    TEXT NOT NULL,
     notes       TEXT
@@ -39,7 +34,7 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
     id                INTEGER PRIMARY KEY,
     started_at        TEXT NOT NULL,
     finished_at       TEXT,
-    pass_name         TEXT NOT NULL,          -- 'A' wide, 'B' enrich
+    pass_name         TEXT NOT NULL,          -- 'A' wide sweep
     actor_input_json  TEXT NOT NULL,
     raw_path          TEXT,                   -- raw dataset on disk, pre-parse
     result_count      INTEGER,
@@ -85,16 +80,6 @@ CREATE TABLE IF NOT EXISTS post_images (
     UNIQUE(post_id, slide_index)
 );
 
-CREATE TABLE IF NOT EXISTS comments (
-    id          INTEGER PRIMARY KEY,
-    post_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-    text        TEXT NOT NULL,
-    digg_count  INTEGER DEFAULT 0,
-    scraped_at  TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
-
 CREATE TABLE IF NOT EXISTS account_baselines (
     account_id      INTEGER NOT NULL REFERENCES accounts(id),
     computed_at     TEXT NOT NULL,
@@ -116,131 +101,29 @@ CREATE TABLE IF NOT EXISTS post_scores (
     anomaly       REAL,
     recency       REAL,
     composite     REAL,
-    cohort        TEXT,                       -- e.g. 'slideshow'
-    selected_as   TEXT                        -- winner | loser | anomaly | NULL
+    cohort        TEXT,                       -- e.g. 'single_image'
+    selected_as   TEXT                        -- winner | reach_only | NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_scores_composite ON post_scores(composite DESC);
 CREATE INDEX IF NOT EXISTS idx_scores_selected  ON post_scores(selected_as);
 
--- ---------- Phase 2 ----------
-
-CREATE TABLE IF NOT EXISTS analyses (
-    id                   INTEGER PRIMARY KEY,
-    post_id              INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-    model                TEXT NOT NULL,
-    created_at           TEXT NOT NULL,
-    selected_as          TEXT,
-    topic                TEXT,
-    hook_text            TEXT,
-    hook_shape           TEXT,
-    target_audience      TEXT,
-    pain_point           TEXT,
-    content_angle        TEXT,
-    slide_structure_json TEXT,
-    visual_style         TEXT,
-    cta_type             TEXT,
-    cta_slide            INTEGER,
-    why_it_performed     TEXT,
-    relevance_to_us      REAL,
-    repeatability        REAL,
-    raw_json             TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_analyses_post  ON analyses(post_id);
-CREATE INDEX IF NOT EXISTS idx_analyses_shape ON analyses(hook_shape);
-
-CREATE TABLE IF NOT EXISTS clusters (
+-- One recreation prompt per winning post. UNIQUE post_id is the rerun-dedup
+-- mechanism; emailed_at is NULL until a digest containing the prompt sends.
+CREATE TABLE IF NOT EXISTS recreation_prompts (
     id           INTEGER PRIMARY KEY,
-    computed_at  TEXT NOT NULL,
-    label        TEXT,
-    member_count INTEGER DEFAULT 0
+    post_id      INTEGER NOT NULL UNIQUE REFERENCES posts(id) ON DELETE CASCADE,
+    pathway      TEXT NOT NULL,        -- 'own_rebrand' | 'source_recreate'
+    selected_as  TEXT,                 -- winner | reach_only, at generation time
+    prompt_path  TEXT,
+    image_path   TEXT,                 -- local image copy attached to the email
+    created_at   TEXT NOT NULL,
+    emailed_at   TEXT
 );
 
-CREATE TABLE IF NOT EXISTS cluster_members (
-    cluster_id  INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
-    analysis_id INTEGER NOT NULL REFERENCES analyses(id) ON DELETE CASCADE,
-    PRIMARY KEY (cluster_id, analysis_id)
-);
-
--- Winner-vs-loser frequency comparison. An attribute present in 90% of winners
--- and 85% of losers explains nothing; this table is what makes that visible.
-CREATE TABLE IF NOT EXISTS attribute_contrasts (
-    id          INTEGER PRIMARY KEY,
-    computed_at TEXT NOT NULL,
-    attribute   TEXT NOT NULL,
-    value       TEXT NOT NULL,
-    winner_freq REAL,
-    loser_freq  REAL,
-    lift        REAL
-);
-
-CREATE TABLE IF NOT EXISTS ideas (
-    id                       TEXT PRIMARY KEY,   -- UUID. the handoff join key.
-    created_at               TEXT NOT NULL,
-    cluster_id               INTEGER REFERENCES clusters(id),
-    source_analysis_ids_json TEXT,
-    concept                  TEXT,
-    hook                     TEXT,
-    caption_draft            TEXT,
-    hashtags_json            TEXT,              -- carried from the winner
-    slide_outline_json       TEXT,
-    suggested_music_id       TEXT,
-    rationale                TEXT,
-    status                   TEXT NOT NULL DEFAULT 'proposed',
-    approved_at              TEXT,
-    edited_by_human          INTEGER DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status);
-
--- ---------- Phase 3 ----------
-
-CREATE TABLE IF NOT EXISTS handoffs (
-    idea_id       TEXT PRIMARY KEY REFERENCES ideas(id),
-    handed_off_at TEXT NOT NULL,
-    external_ref  TEXT
-);
-
-CREATE TABLE IF NOT EXISTS publications (
-    id           INTEGER PRIMARY KEY,
-    idea_id      TEXT REFERENCES ideas(id),
-    tiktok_url   TEXT NOT NULL UNIQUE,
-    published_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS own_performance (
-    id             INTEGER PRIMARY KEY,
-    publication_id INTEGER NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
-    measured_at    TEXT NOT NULL,
-    play_count     INTEGER,
-    digg_count     INTEGER,
-    comment_count  INTEGER,
-    share_count    INTEGER,
-    collect_count  INTEGER
-);
+CREATE INDEX IF NOT EXISTS idx_prompts_unemailed
+    ON recreation_prompts(emailed_at) WHERE emailed_at IS NULL;
 """
-
-# Valid transitions for ideas.status.
-#
-#   proposed ──> approved ──> handed_off ──> published ──> measured
-#       │            ^
-#       ├──> edited ─┘
-#       └──> rejected (terminal)
-IDEA_TRANSITIONS = {
-    "proposed": {"approved", "edited", "rejected"},
-    "edited": {"approved", "rejected"},
-    "approved": {"handed_off", "rejected"},
-    "handed_off": {"published"},
-    "published": {"measured"},
-    "measured": set(),
-    "rejected": set(),
-}
-
-
-def can_transition(current: str, target: str) -> bool:
-    """Whether an idea may move from `current` to `target`."""
-    return target in IDEA_TRANSITIONS.get(current, set())
 
 
 def connect(path: Path) -> sqlite3.Connection:

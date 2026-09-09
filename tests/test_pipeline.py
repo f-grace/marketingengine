@@ -29,8 +29,7 @@ def _item(
     shares: int = 5,
     days_ago: int = 1,
     slideshow: bool = True,
-    slides: int = 6,
-    comment_texts=None,
+    slides: int = 1,
 ):
     created = datetime.now(timezone.utc) - timedelta(days=days_ago)
     return {
@@ -53,7 +52,6 @@ def _item(
         "hashtags": [{"name": "fyp"}, {"name": "niche"}],
         "videoMeta": {"coverUrl": f"https://x/{tiktok_id}/cover.jpg"},
         "isAd": False,
-        "comments": comment_texts or [],
     }
 
 
@@ -114,16 +112,6 @@ class TestIngest:
         report = ingest.ingest_items(conn, items, [])
         assert report.inserted == 1
         assert report.skipped == 2
-
-    def test_short_comments_are_filtered(self, conn):
-        item = _item("p1", "a", 1000, 10, comment_texts=[
-            {"text": "🔥", "diggCount": 5},
-            {"text": "first", "diggCount": 1},
-            {"text": "how do you handle taxes on this though", "diggCount": 40},
-        ])
-        report = ingest.ingest_items(conn, [item], [])
-        assert report.comments == 1
-        assert "taxes" in conn.execute("SELECT text FROM comments").fetchone()[0]
 
 
 class TestScoringPipeline:
@@ -206,21 +194,24 @@ class TestScoringPipeline:
         assert len(handles) > 1, "winners came from a single account"
 
     def test_baseline_ignores_other_formats(self, conn):
-        """Regression: carousels were scored against a video-heavy baseline.
+        """Regression: posts were scored against a mixed-format baseline.
 
-        An account posting mostly high-view video and a few lower-view carousels
-        had its carousel baseline inflated by the videos, so even a standout
-        carousel scored as an underperformer. Observed live on an account with
-        7 carousels and 13 videos.
+        An account posting mostly high-view video (and multi-slide carousels)
+        alongside a few lower-view single images had its single-image baseline
+        inflated by the other formats, so even a standout single image scored
+        as an underperformer.
         """
         items = []
-        # 13 videos at 500k. These must NOT enter the carousel baseline.
-        for i in range(13):
+        # 8 videos and 5 multi-slide carousels at 500k. These must NOT enter
+        # the single-image baseline.
+        for i in range(8):
             items.append(_item(f"v{i}", "mixed", 500_000, 5_000, slideshow=False))
-        # 7 carousels at ~10k, one standout at 200k.
+        for i in range(5):
+            items.append(_item(f"m{i}", "mixed", 500_000, 5_000, slides=6))
+        # 7 single images at ~10k, one standout at 200k.
         for i in range(6):
             items.append(_item(f"c{i}", "mixed", 10_000, 300, likes=600))
-        items.append(_item("carousel_hit", "mixed", 200_000, 6_000, likes=12_000))
+        items.append(_item("single_hit", "mixed", 200_000, 6_000, likes=12_000))
 
         ingest.ingest_items(conn, items, [])
         pipeline.compute_baselines(conn)
@@ -228,15 +219,15 @@ class TestScoringPipeline:
         median_plays = conn.execute(
             "SELECT median_plays FROM account_baselines"
         ).fetchone()["median_plays"]
-        # Median of the 7 carousels, not of all 20 posts.
+        # Median of the 7 single images, not of all 20 posts.
         assert median_plays == pytest.approx(10_000), (
-            f"baseline {median_plays} was polluted by video posts"
+            f"baseline {median_plays} was polluted by other formats"
         )
 
         pipeline.score_and_select(conn, n_winners=2, n_losers=2, n_anomalies=1)
         label = conn.execute(
             "SELECT s.selected_as FROM post_scores s JOIN posts p ON p.id=s.post_id "
-            "WHERE p.tiktok_id='carousel_hit'"
+            "WHERE p.tiktok_id='single_hit'"
         ).fetchone()["selected_as"]
         assert label == selection.WINNER
 
@@ -254,7 +245,7 @@ class TestScoringPipeline:
         ).fetchone()["selected_as"]
         assert label != selection.WINNER
 
-    def test_video_posts_are_excluded_from_the_carousel_cohort(self, conn):
+    def test_video_posts_are_excluded_from_the_cohort(self, conn):
         items = [_item(f"c{i}", "a", 1000, 10) for i in range(12)]
         items += [_item(f"v{i}", "a", 9_999_999, 99_999, slideshow=False)
                   for i in range(5)]
@@ -262,11 +253,36 @@ class TestScoringPipeline:
         report = pipeline.score_and_select(conn)
         assert report.cohort_size == 12
 
-    def test_own_posts_excluded_from_competitor_ranking(self, conn):
+    def test_multi_slide_carousels_are_excluded_from_the_cohort(self, conn):
+        items = [_item(f"c{i}", "a", 1000, 10) for i in range(12)]
+        items += [_item(f"m{i}", "a", 9_999_999, 99_999, slides=6)
+                  for i in range(5)]
+        ingest.ingest_items(conn, items, [])
+        report = pipeline.score_and_select(conn)
+        assert report.cohort_size == 12
+
+    def test_slideshow_with_unknown_image_count_is_excluded(self, conn):
+        # isSlideshow true but the actor returned no image links: slide_count
+        # is 0 and an unknown image count is not "one".
+        items = [_item(f"c{i}", "a", 1000, 10) for i in range(12)]
+        items.append(_item("unknown", "a", 1000, 10, slides=0))
+        ingest.ingest_items(conn, items, [])
+        report = pipeline.score_and_select(conn)
+        assert report.cohort_size == 12
+
+    def test_own_posts_are_included_by_default(self, conn):
+        """Own winners feed the own_rebrand pathway, so they must be scored."""
         items = [_item(f"c{i}", "rival", 1000, 10) for i in range(12)]
         items += [_item(f"m{i}", "me", 1000, 10) for i in range(5)]
         ingest.ingest_items(conn, items, own_handles=["me"])
         report = pipeline.score_and_select(conn)
+        assert report.cohort_size == 17
+
+    def test_exclude_own_still_works_when_asked(self, conn):
+        items = [_item(f"c{i}", "rival", 1000, 10) for i in range(12)]
+        items += [_item(f"m{i}", "me", 1000, 10) for i in range(5)]
+        ingest.ingest_items(conn, items, own_handles=["me"])
+        report = pipeline.score_and_select(conn, exclude_own=True)
         assert report.cohort_size == 12
 
     def test_groups_never_overlap(self, conn):
@@ -336,19 +352,21 @@ class TestScoringPipeline:
         assert len(composites) == 20
 
 
-class TestSelectedUrls:
+class TestSelectedPosts:
     def test_returns_only_the_batch(self, conn):
         ingest.ingest_items(
             conn, [_item(f"p{i}", "a", 1000 * (i + 1), 10) for i in range(40)], []
         )
         pipeline.score_and_select(conn, n_winners=5, n_losers=2, n_anomalies=2,
                                   n_reach_only=2)
-        urls = pipeline.selected_post_urls(conn)
+        rows = pipeline.selected_posts(conn)
         selected = conn.execute(
             "SELECT COUNT(*) FROM post_scores WHERE selected_as IS NOT NULL"
         ).fetchone()[0]
-        assert len(urls) == selected
-        assert all(u.startswith("https://www.tiktok.com/") for u in urls)
+        assert len(rows) == selected
+        assert all(r["url"].startswith("https://www.tiktok.com/") for r in rows)
+        assert all(r["selected_as"] is not None for r in rows)
+        assert {r["is_own"] for r in rows} == {0}
 
 
 class TestExport:
@@ -375,20 +393,3 @@ class TestExport:
     def test_export_on_empty_store_writes_headers_only(self, conn, tmp_path):
         written = export.to_csv(conn, tmp_path / "exports")
         assert len(written) == len(export.VIEWS)
-
-
-class TestIdeaStateMachine:
-    def test_happy_path(self):
-        assert db.can_transition("proposed", "approved")
-        assert db.can_transition("approved", "handed_off")
-        assert db.can_transition("handed_off", "published")
-        assert db.can_transition("published", "measured")
-
-    def test_rejected_is_terminal(self):
-        assert not db.can_transition("rejected", "approved")
-
-    def test_cannot_skip_the_human_gate(self):
-        assert not db.can_transition("proposed", "handed_off")
-
-    def test_cannot_unpublish(self):
-        assert not db.can_transition("published", "proposed")

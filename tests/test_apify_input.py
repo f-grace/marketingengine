@@ -31,19 +31,3 @@ class TestPassA:
                       "shouldDownloadSlideshowImages", "aiVideoDescription",
                       "aiVideoSummary"):
             assert payload[field] is False
-
-
-class TestPassB:
-    def test_enriches_only_named_posts(self):
-        payload = apify.pass_b_input(["https://x/1", "https://x/2"])
-        assert payload["postURLs"] == ["https://x/1", "https://x/2"]
-        assert "profiles" not in payload
-
-    def test_replies_are_excluded(self):
-        payload = apify.pass_b_input(["https://x/1"], top_level_comments_per_post=20)
-        assert payload["topLevelCommentsPerPost"] == 20
-        assert payload["maxRepliesPerComment"] == 0
-
-    def test_downloads_slideshow_images(self):
-        payload = apify.pass_b_input(["https://x/1"])
-        assert payload["shouldDownloadSlideshowImages"] is True

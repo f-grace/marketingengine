@@ -5,7 +5,7 @@ missing `authorMeta`, or carrying a null `playCount`, or arriving with a
 malformed timestamp, must not abort a 1,000-item ingest. Bad items are counted
 and reported, never silently dropped.
 
-    dataset item ──> validate ──> upsert post ──> upsert images/comments
+    dataset item ──> validate ──> upsert post ──> upsert images
                         │
                         ├─ no tiktok id     -> skipped, counted
                         ├─ no author handle -> skipped, counted
@@ -29,7 +29,6 @@ class IngestReport:
     updated: int = 0
     skipped: int = 0
     images: int = 0
-    comments: int = 0
     reasons: Dict[str, int] = field(default_factory=dict)
 
     def skip(self, reason: str) -> None:
@@ -43,9 +42,7 @@ class IngestReport:
             f"{self.skipped} skipped",
         ]
         if self.images:
-            parts.append(f"{self.images} slide images")
-        if self.comments:
-            parts.append(f"{self.comments} comments")
+            parts.append(f"{self.images} image links")
         line = ", ".join(parts)
         if self.reasons:
             detail = "; ".join(f"{k}: {v}" for k, v in sorted(self.reasons.items()))
@@ -101,69 +98,13 @@ def _slideshow_links(item: Dict) -> List[str]:
     return out
 
 
-MIN_COMMENT_CHARS = 15
-
-
-def ingest_comments(conn: sqlite3.Connection, rows: Iterable[Dict]) -> int:
-    """Write comment rows from the actor's separate comments dataset.
-
-    Joins to posts on the video URL. Rows for posts we never ingested are
-    dropped silently, which is correct: the comments dataset covers the whole
-    run and we only keep comments for posts in the store.
-
-    Sub-15-character comments are filtered out here rather than downstream.
-    They are emoji, tags, and "first", and paying an LLM to cluster them is
-    waste. Replies are excluded at the actor level (maxRepliesPerComment=0),
-    so everything arriving here should already be top-level.
-    """
-    now = _now()
-    url_to_post: Dict[str, int] = {}
-    for row in conn.execute("SELECT id, url FROM posts WHERE url IS NOT NULL"):
-        url_to_post[row["url"]] = row["id"]
-
-    written = 0
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        url = (row.get("videoWebUrl") or row.get("submittedVideoUrl")
-               or row.get("input"))
-        post_id = url_to_post.get(url)
-        if post_id is None:
-            continue
-
-        text = (row.get("text") or "").strip()
-        if len(text) < MIN_COMMENT_CHARS:
-            continue
-
-        # cid is the platform's stable comment id; use it to avoid duplicating
-        # comments across repeated enrich runs on the same post.
-        cid = row.get("cid")
-        if cid:
-            existing = conn.execute(
-                "SELECT 1 FROM comments WHERE post_id = ? AND text = ?",
-                (post_id, text),
-            ).fetchone()
-            if existing:
-                continue
-
-        conn.execute(
-            "INSERT INTO comments (post_id, text, digg_count, scraped_at) "
-            "VALUES (?, ?, ?, ?)",
-            (post_id, text, _int(row.get("diggCount")), now),
-        )
-        written += 1
-
-    conn.commit()
-    return written
-
-
 def ingest_items(
     conn: sqlite3.Connection,
     items: Iterable[Dict],
     own_handles: Iterable[str],
     scrape_run_id: Optional[int] = None,
 ) -> IngestReport:
-    """Write actor items into `posts`, `post_images`, and `comments`."""
+    """Write actor items into `posts` and `post_images`."""
     report = IngestReport()
     now = _now()
     own_norm = {h.lstrip("@").strip().lower() for h in own_handles}
@@ -259,24 +200,6 @@ def ingest_items(
                 (post_id, idx, url),
             )
             report.images += 1
-
-        for comment in item.get("comments") or []:
-            text = comment.get("text") if isinstance(comment, dict) else comment
-            if not text or len(str(text).strip()) < 15:
-                # Sub-15-character comments are emoji, tags, and "first".
-                # Filtering here keeps the clustering step honest and cheap.
-                continue
-            conn.execute(
-                "INSERT INTO comments (post_id, text, digg_count, scraped_at) "
-                "VALUES (?, ?, ?, ?)",
-                (
-                    post_id,
-                    str(text).strip(),
-                    _int((comment or {}).get("diggCount")) if isinstance(comment, dict) else 0,
-                    now,
-                ),
-            )
-            report.comments += 1
 
     conn.commit()
     return report

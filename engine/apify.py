@@ -1,13 +1,14 @@
 """Apify actor client for clockworks/tiktok-scraper.
 
-Two passes, deliberately:
+One wide, cheap pass: all accounts, no comments, no media downloads (~$3.70/1k
+results). Comments and per-post downloads are billed multipliers, and the
+pipeline needs neither — the single winning image per selected post is fetched
+directly from the CDN by `engine enrich`, for free.
 
-    Pass A  wide + cheap    all accounts, no comments, no downloads   ~$3.70/1k
-    Pass B  narrow + rich   only selected posts, + comments + images
-
-Comments and image downloads are per-post multipliers on billed results.
-Applying them to all 1,000 posts instead of the ~50 you actually analyse is the
-difference between a $3.70 run and a $40+ run.
+(Contingency: if direct CDN downloads ever start failing consistently, the
+actor can rehost images on Apify storage — run it over just the selected
+`postURLs` with `shouldDownloadSlideshowImages: true` and read the stable
+`downloadLink` values. Paid, so it is not the default path.)
 
 Every field below comes from the actor's published input schema. Two values are
 NOT verified and are flagged inline: the allowed set for `profileSorting`, and
@@ -18,8 +19,6 @@ from __future__ import annotations
 
 import json
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -110,32 +109,6 @@ def pass_a_input(
     return payload
 
 
-def pass_b_input(
-    post_urls: List[str],
-    top_level_comments_per_post: int = 30,
-    proxy_country_code: str = "US",
-) -> Dict:
-    """Enrichment sweep over selected posts only.
-
-    `maxRepliesPerComment` is 0 on purpose: top-level comments are the questions
-    the market is asking, replies are mostly commenters talking to each other,
-    and you pay per comment.
-    """
-    return {
-        "postURLs": post_urls,
-        "topLevelCommentsPerPost": top_level_comments_per_post,
-        "maxRepliesPerComment": 0,
-        "commentsPerPost": 0,
-        "shouldDownloadSlideshowImages": True,
-        "shouldDownloadCovers": True,
-        "shouldDownloadVideos": False,
-        "downloadSubtitlesOptions": "NEVER_DOWNLOAD_SUBTITLES",
-        "aiVideoDescription": False,
-        "aiVideoSummary": False,
-        "proxyCountryCode": proxy_country_code,
-    }
-
-
 def run_actor(
     token: str,
     run_input: Dict,
@@ -189,35 +162,3 @@ def run_actor(
 def load_raw(path: Path) -> List[Dict]:
     """Re-read a saved dataset so scoring can be re-run for free."""
     return json.loads(path.read_text())
-
-
-def fetch_comments(items: List[Dict], timeout: int = 60) -> List[Dict]:
-    """Pull comment rows from the separate dataset the actor writes them to.
-
-    Comments are NOT embedded in the post item. Each post carries a
-    `commentsDatasetUrl` pointing at a second, pre-signed dataset holding every
-    comment from the run. In practice one URL is shared across all posts in a
-    run, so the distinct set is deduplicated before fetching.
-
-    Each row joins back to a post via `videoWebUrl` (with `submittedVideoUrl`
-    and `input` as fallbacks, all three observed carrying the same value).
-
-    Returns an empty list rather than raising when no dataset is referenced or a
-    fetch fails: missing comments should degrade the analysis, not abort a run
-    whose posts and images arrived fine.
-    """
-    urls = {
-        item.get("commentsDatasetUrl")
-        for item in items
-        if isinstance(item, dict) and item.get("commentsDatasetUrl")
-    }
-    rows: List[Dict] = []
-    for url in sorted(urls):
-        try:
-            with urllib.request.urlopen(url, timeout=timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, ValueError, TimeoutError):
-            continue
-        if isinstance(payload, list):
-            rows.extend(r for r in payload if isinstance(r, dict))
-    return rows

@@ -3,25 +3,22 @@
 # Copy this file to config/accounts.yml and fill it in.
 # Handles only, with or without the leading @.
 
-# Your own TikTok account.
-#
-# Add this NOW, even though analysing your own posts is a Phase 3 feature.
-# Baseline maths needs history, and history is the one thing you cannot
-# backfill later. Scraping your own account costs pennies per run and means
-# Phase 3 opens with months of data instead of zero.
+# Your own TikTok account. Winners here get an `own_rebrand` recreation
+# prompt: same layout and hook, fresh wording, swapped logos/branding.
 own:
   - your_handle_here
 
-# Competitor accounts in your niche.
+# Source accounts: competitors plus any account in the space worth mining for
+# ideas. Every non-own account is treated the same way: viral single-image
+# posts get a `source_recreate` prompt that rebuilds the concept in your voice.
 #
-# Pick 8-12. Fewer than that and the carousel cohort is too thin to rank
-# (the pipeline will refuse and tell you so). Choose accounts whose AUDIENCE
-# overlaps yours, not whose product does; the point is learning what that
-# audience responds to.
-competitors:
-  - competitor_one
-  - competitor_two
-  - competitor_three
+# Pick 8-12. Fewer than that and the single-image cohort is too thin to rank
+# (the pipeline will warn). Choose accounts whose AUDIENCE overlaps yours, not
+# whose product does; the point is learning what that audience responds to.
+sources:
+  - source_account_one
+  - source_account_two
+  - source_account_three
 
 scrape:
   # Posts per account per run.
@@ -41,16 +38,12 @@ scrape:
 
   proxy_country_code: "US"
 
-  # Top-level comments pulled per post in Pass B. Replies are excluded on
-  # purpose: top-level comments are the questions your market is asking,
-  # replies are mostly commenters talking to each other, and you pay per comment.
-  top_level_comments_per_post: 30
-
-  # Analysis batch composition.
-  #
-  # The losers are not optional. Analysing only winners means every attribute
-  # they share looks predictive, including the ones every loser shares too.
-  # Without a control group "has a strong hook" reads as a success factor.
+  # Selection sizes over the single-image cohort. Losers and anomalies default
+  # to 0: the engine's only output is recreation prompts for high performers.
   n_winners: 30
-  n_losers: 10
-  n_anomalies: 10
+  n_losers: 0
+  n_anomalies: 0
+
+  # High reach, low engagement. Formats that travel but do not stick — still
+  # worth recreating for reach.
+  n_reach_only: 8

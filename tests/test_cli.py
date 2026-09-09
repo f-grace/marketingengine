@@ -18,6 +18,9 @@ def _parse(argv):
     parser = cli.build_parser()
     args = parser.parse_args(argv)
     args.yes = getattr(args, "yes", False)
+    args.dry_run = getattr(args, "dry_run", False)
+    args.force = getattr(args, "force", False)
+    args.no_email = getattr(args, "no_email", False)
     return args
 
 
@@ -32,7 +35,8 @@ class TestYesFlagPosition:
         assert _parse(["scrape"]).yes is False
 
     @pytest.mark.parametrize("command", ["scrape", "enrich", "run", "score",
-                                         "export", "status", "init"])
+                                         "prompts", "email", "export",
+                                         "status", "init"])
     def test_every_subcommand_accepts_it_in_both_positions(self, command):
         assert _parse([command, "--yes"]).yes is True
         assert _parse(["--yes", command]).yes is True
@@ -55,12 +59,30 @@ class TestCommands:
             _parse(["nonsense"])
 
 
-class TestExportOptions:
-    def test_sheet_name_default(self):
-        assert _parse(["export"]).sheet_name == "TikTok Content Intelligence"
+class TestPromptOptions:
+    def test_defaults(self):
+        args = _parse(["prompts"])
+        assert args.dry_run is False
+        assert args.force is False
 
-    def test_sheet_name_override(self):
-        assert _parse(["export", "--sheet-name", "Q4"]).sheet_name == "Q4"
+    def test_dry_run(self):
+        assert _parse(["prompts", "--dry-run"]).dry_run is True
+
+    def test_force(self):
+        assert _parse(["prompts", "--force"]).force is True
+
+
+class TestEmailOptions:
+    def test_dry_run(self):
+        assert _parse(["email", "--dry-run"]).dry_run is True
+
+
+class TestRunOptions:
+    def test_no_email(self):
+        assert _parse(["run", "--no-email"]).no_email is True
+
+    def test_email_on_by_default(self):
+        assert _parse(["run"]).no_email is False
 
 
 class TestBudgetWarning:

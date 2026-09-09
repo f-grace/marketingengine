@@ -24,6 +24,8 @@ DATA_DIR = ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 DB_PATH = DATA_DIR / "engine.db"
 EXPORT_DIR = DATA_DIR / "exports"
+PROMPTS_DIR = EXPORT_DIR / "prompts"
+IMAGES_DIR = DATA_DIR / "images"
 
 ACTOR_ID = "clockworks/tiktok-scraper"
 
@@ -35,14 +37,14 @@ class ConfigError(RuntimeError):
 @dataclass
 class Accounts:
     own: List[str] = field(default_factory=list)
-    competitors: List[str] = field(default_factory=list)
+    sources: List[str] = field(default_factory=list)
 
     @property
     def all_handles(self) -> List[str]:
         """Own account first so it is never dropped by a truncated run."""
         seen = set()
         out = []
-        for h in list(self.own) + list(self.competitors):
+        for h in list(self.own) + list(self.sources):
             h = h.lstrip("@").strip()
             if h and h not in seen:
                 seen.add(h)
@@ -59,11 +61,17 @@ class ScrapeSettings:
     results_per_page: int = 100
     oldest_post_date: str = "60 days"
     proxy_country_code: str = "US"
-    top_level_comments_per_post: int = 30
     n_winners: int = 30
-    n_losers: int = 10
-    n_anomalies: int = 10
+    n_losers: int = 0
+    n_anomalies: int = 0
     n_reach_only: int = 8
+
+
+@dataclass
+class GmailSettings:
+    address: str
+    app_password: str
+    to: str
 
 
 def load_env_file(path: Optional[Path] = None) -> None:
@@ -104,6 +112,22 @@ def apify_token() -> str:
     return token
 
 
+def gmail_settings() -> Optional[GmailSettings]:
+    """Gmail delivery settings, or None when not configured.
+
+    None (rather than an exception) so email degrades to files-on-disk: the
+    prompts are already written before delivery is attempted. The password is
+    a Google App Password, read from the environment only and never stored.
+    """
+    load_env_file()
+    address = os.environ.get("GMAIL_ADDRESS", "").strip()
+    password = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+    to = os.environ.get("DIGEST_TO", "").strip() or address
+    if not address or not password:
+        return None
+    return GmailSettings(address=address, app_password=password, to=to)
+
+
 def load_accounts(path: Optional[Path] = None) -> Accounts:
     path = path or (CONFIG_DIR / "accounts.yml")
     if not path.exists():
@@ -113,17 +137,18 @@ def load_accounts(path: Optional[Path] = None) -> Accounts:
         )
     raw = yaml.safe_load(path.read_text()) or {}
     own = raw.get("own") or []
-    competitors = raw.get("competitors") or []
+    # `competitors` is the pre-rename key; accept it so old configs keep working.
+    sources = raw.get("sources") or raw.get("competitors") or []
 
-    if not isinstance(own, list) or not isinstance(competitors, list):
-        raise ConfigError(f"{path}: 'own' and 'competitors' must both be lists")
+    if not isinstance(own, list) or not isinstance(sources, list):
+        raise ConfigError(f"{path}: 'own' and 'sources' must both be lists")
 
-    accounts = Accounts(own=own, competitors=competitors)
+    accounts = Accounts(own=own, sources=sources)
     if not accounts.all_handles:
         raise ConfigError(
-            f"{path} lists no handles. Add at least one competitor under "
-            "'competitors:', and your own handle under 'own:' so baseline "
-            "history starts accumulating now rather than when Phase 3 begins."
+            f"{path} lists no handles. Add at least one idea-source account "
+            "under 'sources:', and your own handle under 'own:' so your own "
+            "winners get rebrand prompts too."
         )
     return accounts
 
@@ -138,9 +163,6 @@ def load_scrape_settings(path: Optional[Path] = None) -> ScrapeSettings:
         results_per_page=raw.get("results_per_page", defaults.results_per_page),
         oldest_post_date=raw.get("oldest_post_date", defaults.oldest_post_date),
         proxy_country_code=raw.get("proxy_country_code", defaults.proxy_country_code),
-        top_level_comments_per_post=raw.get(
-            "top_level_comments_per_post", defaults.top_level_comments_per_post
-        ),
         n_winners=raw.get("n_winners", defaults.n_winners),
         n_losers=raw.get("n_losers", defaults.n_losers),
         n_anomalies=raw.get("n_anomalies", defaults.n_anomalies),
@@ -149,12 +171,12 @@ def load_scrape_settings(path: Optional[Path] = None) -> ScrapeSettings:
 
 
 def load_brand(path: Optional[Path] = None) -> Dict:
-    """Product truth. Required for Phase 2 generation, unused in Phase 1."""
+    """Product truth. The prompt builder reads voice, guardrails, and phase."""
     path = path or (CONFIG_DIR / "brand.json")
     if not path.exists():
         raise ConfigError(
             f"{path} not found. Copy config/brand.example.json to "
             "config/brand.json and describe what you sell, to whom, and in what "
-            "voice. Phase 1 (scrape and score) runs without it; generation does not."
+            "voice. Scrape and score run without it; prompt generation does not."
         )
     return json.loads(path.read_text())
