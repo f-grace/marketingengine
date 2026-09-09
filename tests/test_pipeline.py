@@ -352,6 +352,20 @@ class TestScoringPipeline:
         assert len(composites) == 20
 
 
+class TestKnownAccounts:
+    def test_only_accounts_with_posts_count_as_known(self, conn):
+        ingest.ingest_items(conn, [_item("p1", "Seen", 1000, 10)], [])
+        # An account row without posts (e.g. deactivated or pre-registered)
+        # must still get a deep first scrape.
+        db.upsert_account(conn, "empty", is_own=False,
+                          now="2026-01-01T00:00:00+00:00")
+        known = pipeline.known_account_handles(conn)
+        assert known == {"seen"}  # lowercased for case-insensitive matching
+
+    def test_empty_store_knows_nothing(self, conn):
+        assert pipeline.known_account_handles(conn) == set()
+
+
 class TestSelectedPosts:
     def test_returns_only_the_batch(self, conn):
         ingest.ingest_items(

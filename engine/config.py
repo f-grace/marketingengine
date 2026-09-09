@@ -59,6 +59,10 @@ class Accounts:
 @dataclass
 class ScrapeSettings:
     results_per_page: int = 100
+    # Depth for accounts the store has already seen. Shallower than the first
+    # deep scrape: it only needs to pick up posts added since the last run and
+    # refresh metrics on recent ones so late-blooming virals get caught.
+    results_per_page_refresh: int = 10
     oldest_post_date: str = "60 days"
     proxy_country_code: str = "US"
     n_winners: int = 30
@@ -161,6 +165,9 @@ def load_scrape_settings(path: Optional[Path] = None) -> ScrapeSettings:
     defaults = ScrapeSettings()
     return ScrapeSettings(
         results_per_page=raw.get("results_per_page", defaults.results_per_page),
+        results_per_page_refresh=raw.get(
+            "results_per_page_refresh", defaults.results_per_page_refresh
+        ),
         oldest_post_date=raw.get("oldest_post_date", defaults.oldest_post_date),
         proxy_country_code=raw.get("proxy_country_code", defaults.proxy_country_code),
         n_winners=raw.get("n_winners", defaults.n_winners),

@@ -28,7 +28,13 @@ scrape:
   # results = $3.70, i.e. most of a month's credit in a single run.
   #
   # Validate the setup at 50, confirm the ingest looks right, then scale up.
+  # This depth applies only the FIRST time an account is scraped.
   results_per_page: 50
+
+  # Posts per account on every later run: enough to pick up new posts since
+  # the last run and refresh play counts on recent ones, so a post that goes
+  # viral days after publishing still gets caught.
+  results_per_page_refresh: 10
 
   # How far back to look. Format cycles turn over in roughly three weeks, so
   # anything much older than this is archaeology.

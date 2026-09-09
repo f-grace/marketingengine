@@ -310,6 +310,20 @@ def score_and_select(
     )
 
 
+def known_account_handles(conn: sqlite3.Connection) -> set:
+    """Handles (lowercased) that already have at least one post in the store.
+
+    The scrape step uses this to split accounts into a deep first scrape
+    (baseline building) versus a shallow refresh (new posts + metric updates),
+    which is what keeps a recurring schedule cheap.
+    """
+    rows = conn.execute(
+        """SELECT DISTINCT a.handle FROM accounts a
+           JOIN posts p ON p.account_id = a.id"""
+    ).fetchall()
+    return {r["handle"].lower() for r in rows}
+
+
 def selected_posts(conn: sqlite3.Connection) -> List[sqlite3.Row]:
     """The current recreation batch: one row per selected post.
 

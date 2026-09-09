@@ -104,11 +104,28 @@ def cmd_scrape(args) -> int:
     settings = config.load_scrape_settings()
     token = config.apify_token()
 
-    handles = accounts.all_handles
-    est = len(handles) * settings.results_per_page / 1000.0 * apify.USD_PER_1000_RESULTS
+    # Accounts already in the store only need a shallow refresh: it picks up
+    # posts added since the last run AND updates play counts on recent posts,
+    # which is how a post that goes viral days after publishing still gets
+    # caught. Unseen accounts get one deep scrape to build their baseline.
+    conn = _open_db()
+    known = pipeline.known_account_handles(conn)
+    deep = [h for h in accounts.all_handles if h.lower() not in known]
+    refresh = [h for h in accounts.all_handles if h.lower() in known]
 
-    print(f"Pass A over {len(handles)} accounts "
-          f"x {settings.results_per_page} posts")
+    batches = []
+    if deep:
+        batches.append(("deep (first scrape)", deep, settings.results_per_page))
+    if refresh:
+        batches.append(("refresh", refresh, settings.results_per_page_refresh))
+
+    est = sum(len(h) * rpp for _, h, rpp in batches) / 1000.0 \
+        * apify.USD_PER_1000_RESULTS
+
+    print(f"Pass A over {len(accounts.all_handles)} accounts")
+    for label, handles, rpp in batches:
+        print(f"  {label}: {len(handles)} accounts x {rpp} posts "
+              f"({', '.join(handles)})")
     print(f"  own: {', '.join(accounts.own) or '(none set)'}")
     print(f"  estimated cost: ~${est:.2f} (directional, not a quote)")
 
@@ -122,45 +139,52 @@ def cmd_scrape(args) -> int:
 
     if not _confirm("Run the actor?", args.yes):
         print("Aborted.")
+        conn.close()
         return 1
 
-    run_input = apify.pass_a_input(
-        handles,
-        results_per_page=settings.results_per_page,
-        oldest_post_date=settings.oldest_post_date,
-        proxy_country_code=settings.proxy_country_code,
-    )
+    for label, handles, rpp in batches:
+        run_input = apify.pass_a_input(
+            handles,
+            results_per_page=rpp,
+            oldest_post_date=settings.oldest_post_date,
+            proxy_country_code=settings.proxy_country_code,
+        )
 
-    conn = _open_db()
-    cur = conn.execute(
-        "INSERT INTO scrape_runs (started_at, pass_name, actor_input_json) "
-        "VALUES (?, 'A', ?)",
-        (_now(), str(run_input)),
-    )
-    run_row_id = cur.lastrowid
-    conn.commit()
-
-    try:
-        result = apify.run_actor(token, run_input, raw_dir=config.RAW_DIR, pass_name="A")
-    except apify.ApifyError as exc:
-        conn.execute("UPDATE scrape_runs SET error = ?, finished_at = ? WHERE id = ?",
-                     (str(exc), _now(), run_row_id))
+        cur = conn.execute(
+            "INSERT INTO scrape_runs (started_at, pass_name, actor_input_json) "
+            "VALUES (?, 'A', ?)",
+            (_now(), str(run_input)),
+        )
+        run_row_id = cur.lastrowid
         conn.commit()
-        print(f"ERROR: {exc}")
-        return 1
 
-    conn.execute(
-        "UPDATE scrape_runs SET finished_at = ?, result_count = ?, "
-        "raw_path = ?, apify_run_id = ? WHERE id = ?",
-        (_now(), len(result.items), str(result.raw_path), result.run_id, run_row_id),
-    )
-    conn.commit()
+        try:
+            result = apify.run_actor(token, run_input, raw_dir=config.RAW_DIR,
+                                     pass_name="A")
+        except apify.ApifyError as exc:
+            conn.execute(
+                "UPDATE scrape_runs SET error = ?, finished_at = ? WHERE id = ?",
+                (str(exc), _now(), run_row_id))
+            conn.commit()
+            conn.close()
+            print(f"ERROR: {exc}")
+            return 1
 
-    print(f"  {len(result.items)} results, ~${result.estimated_cost_usd:.2f}")
-    print(f"  raw dataset saved to {result.raw_path}")
+        conn.execute(
+            "UPDATE scrape_runs SET finished_at = ?, result_count = ?, "
+            "raw_path = ?, apify_run_id = ? WHERE id = ?",
+            (_now(), len(result.items), str(result.raw_path), result.run_id,
+             run_row_id),
+        )
+        conn.commit()
 
-    report = ingest.ingest_items(conn, result.items, accounts.own, run_row_id)
-    print(f"  ingested: {report.summary()}")
+        print(f"  [{label}] {len(result.items)} results, "
+              f"~${result.estimated_cost_usd:.2f}")
+        print(f"  raw dataset saved to {result.raw_path}")
+
+        report = ingest.ingest_items(conn, result.items, accounts.own, run_row_id)
+        print(f"  ingested: {report.summary()}")
+
     conn.close()
     return 0
 
