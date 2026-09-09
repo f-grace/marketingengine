@@ -352,6 +352,74 @@ class TestScoringPipeline:
         assert len(composites) == 20
 
 
+class TestPerformanceFloors:
+    """Regression: a 263-play, 0-like post was selected as a 'winner' because
+    rank-based selection pads a thin cohort with whatever exists."""
+
+    def test_tiny_posts_never_selected_even_in_a_thin_cohort(self, conn):
+        # Whole cohort is small-time; nothing clears min_plays.
+        items = [_item(f"p{i}", "a", 200 + i, 2) for i in range(13)]
+        ingest.ingest_items(conn, items, [])
+        report = pipeline.score_and_select(conn, min_plays=10_000)
+        assert report.selection.total == 0
+        assert report.below_floor == 13
+
+    def test_below_baseline_post_fails_reach_floor(self, conn):
+        # 20k plays clears min_plays, but 0.9x the account median is not viral.
+        items = [_item(f"p{i}", "a", 22_000, 200) for i in range(15)]
+        items.append(_item("meh", "a", 20_000, 180))
+        ingest.ingest_items(conn, items, [])
+        report = pipeline.score_and_select(
+            conn, min_plays=10_000, min_reach_multiple=2.0
+        )
+        selected = {
+            r["tiktok_id"] for r in conn.execute(
+                "SELECT p.tiktok_id FROM post_scores s "
+                "JOIN posts p ON p.id=s.post_id WHERE s.selected_as IS NOT NULL"
+            )
+        }
+        assert "meh" not in selected
+        assert selected == set()  # nobody in a flat cohort is 2x their median
+
+    def test_genuine_viral_post_clears_the_floors(self, conn):
+        items = [_item(f"p{i}", "a", 10_000, 100) for i in range(15)]
+        items.append(_item("banger", "a", 80_000, 2_000))
+        ingest.ingest_items(conn, items, [])
+        pipeline.score_and_select(
+            conn, min_plays=10_000, min_reach_multiple=2.0, max_age_days=30
+        )
+        selected = {
+            r["tiktok_id"] for r in conn.execute(
+                "SELECT p.tiktok_id FROM post_scores s "
+                "JOIN posts p ON p.id=s.post_id WHERE s.selected_as IS NOT NULL"
+            )
+        }
+        assert selected == {"banger"}
+
+    def test_old_viral_post_fails_age_floor(self, conn):
+        items = [_item(f"p{i}", "a", 10_000, 100) for i in range(15)]
+        items.append(_item("ancient", "a", 500_000, 9_000, days_ago=75))
+        ingest.ingest_items(conn, items, [])
+        report = pipeline.score_and_select(
+            conn, min_plays=10_000, min_reach_multiple=2.0, max_age_days=30
+        )
+        assert report.selection.total == 0
+
+    def test_floors_off_preserves_rank_based_behaviour(self, conn):
+        items = [_item(f"p{i}", "a", 200 + i, 2) for i in range(13)]
+        ingest.ingest_items(conn, items, [])
+        report = pipeline.score_and_select(conn)  # floors default to 0 here
+        assert report.selection.total > 0
+        assert report.below_floor == 0
+
+    def test_floors_still_score_everything_for_export(self, conn):
+        items = [_item(f"p{i}", "a", 200 + i, 2) for i in range(13)]
+        ingest.ingest_items(conn, items, [])
+        pipeline.score_and_select(conn, min_plays=10_000)
+        scored = conn.execute("SELECT COUNT(*) FROM post_scores").fetchone()[0]
+        assert scored == 13
+
+
 class TestKnownAccounts:
     def test_only_accounts_with_posts_count_as_known(self, conn):
         ingest.ingest_items(conn, [_item("p1", "Seen", 1000, 10)], [])

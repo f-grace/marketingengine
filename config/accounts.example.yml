@@ -53,3 +53,10 @@ scrape:
   # High reach, low engagement. Formats that travel but do not stick — still
   # worth recreating for reach.
   n_reach_only: 8
+
+  # Performance floors: a post must clear ALL of these to be selected, no
+  # matter how thin the cohort is. Rank-based selection alone pads a thin
+  # cohort with whatever exists. Set a floor to 0 to disable it.
+  min_plays: 10000          # absolute minimum views
+  min_reach_multiple: 2.0   # at least 2x that account's median views
+  max_age_days: 30          # only recent posts (also keeps image URLs alive)

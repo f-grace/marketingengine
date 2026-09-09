@@ -42,11 +42,14 @@ class ScoreReport:
     selection: selection.Selection
     baselines_computed: int
     undated_posts: int
+    below_floor: int = 0
 
     def summary(self) -> str:
         lines = [
             f"cohort: {self.cohort_size} single-image posts",
             f"baselines: {self.baselines_computed} accounts",
+            f"below performance floors: {self.below_floor} "
+            "(scored but not eligible for selection)",
             f"selected: {len(self.selection.winners)} winners, "
             f"{len(self.selection.reach_only)} reach-only, "
             f"{len(self.selection.anomalies)} anomalies, "
@@ -177,12 +180,22 @@ def score_and_select(
     n_anomalies: int = selection.DEFAULT_N_ANOMALIES,
     n_reach_only: int = selection.DEFAULT_N_REACH_ONLY,
     exclude_own: bool = False,
+    min_plays: int = 0,
+    min_reach_multiple: float = 0.0,
+    max_age_days: int = 0,
 ) -> ScoreReport:
     """Score the single-image cohort and pick the recreation batch.
 
     Own posts are IN the cohort by default: a winner from our own account gets
     an `own_rebrand` prompt, a winner from a source account a `source_recreate`
     one. The pathway split happens downstream from `accounts.is_own`, not here.
+
+    The floors (`min_plays`, `min_reach_multiple`, `max_age_days`; 0 disables)
+    gate ELIGIBILITY, not scoring: every cohort post still gets a score row for
+    the CSVs, but selection only ranks posts that cleared every floor. Rank-
+    based selection alone pads a thin cohort with whatever exists, viral or
+    not, and the whole point of the output is "only things that actually went
+    well".
     """
     baselines_computed = compute_baselines(conn)
     baselines = _latest_baselines(conn)
@@ -206,6 +219,7 @@ def score_and_select(
     reach_indices: List[float] = []
     recencies: List[float] = []
     shapes: List[float] = []
+    ages: List[float] = []
 
     save_lifts: List[float] = []
     engage_lifts: List[float] = []
@@ -245,6 +259,7 @@ def score_and_select(
         if age is None:
             undated += 1
             age = 0.0
+        ages.append(age)
         recencies.append(scoring.recency_weight(age))
 
         shapes.append(
@@ -258,6 +273,15 @@ def score_and_select(
     anomalies = scoring.anomaly_scores(shapes)
     rankable = scoring.cohort_is_rankable(len(posts))
 
+    def _eligible(i: int, p) -> bool:
+        if min_plays and p["play_count"] < min_plays:
+            return False
+        if min_reach_multiple and reach_indices[i] < min_reach_multiple:
+            return False
+        if max_age_days and ages[i] > max_age_days:
+            return False
+        return True
+
     candidates = [
         selection.Candidate(
             post_id=str(p["id"]),
@@ -267,7 +291,9 @@ def score_and_select(
             engagement=engage_lifts[i],
         )
         for i, p in enumerate(posts)
+        if _eligible(i, p)
     ]
+    below_floor = len(posts) - len(candidates)
     picked = selection.select(
         candidates, rankable=rankable,
         n_winners=n_winners, n_losers=n_losers, n_anomalies=n_anomalies,
@@ -307,6 +333,7 @@ def score_and_select(
         selection=picked,
         baselines_computed=baselines_computed,
         undated_posts=undated,
+        below_floor=below_floor,
     )
 
 
