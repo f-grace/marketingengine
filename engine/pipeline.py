@@ -181,6 +181,7 @@ def score_and_select(
     n_reach_only: int = selection.DEFAULT_N_REACH_ONLY,
     exclude_own: bool = False,
     min_plays: int = 0,
+    min_likes: int = 0,
     min_reach_multiple: float = 0.0,
     max_age_days: int = 0,
 ) -> ScoreReport:
@@ -190,12 +191,13 @@ def score_and_select(
     an `own_rebrand` prompt, a winner from a source account a `source_recreate`
     one. The pathway split happens downstream from `accounts.is_own`, not here.
 
-    The floors (`min_plays`, `min_reach_multiple`, `max_age_days`; 0 disables)
-    gate ELIGIBILITY, not scoring: every cohort post still gets a score row for
-    the CSVs, but selection only ranks posts that cleared every floor. Rank-
-    based selection alone pads a thin cohort with whatever exists, viral or
-    not, and the whole point of the output is "only things that actually went
-    well".
+    The floors gate ELIGIBILITY, not scoring: every cohort post still gets a
+    score row for the CSVs, but selection only ranks posts that cleared the
+    floors (0 disables a floor). `min_likes` and `min_plays` are OR'd — either
+    qualifies a post as viral enough — while `max_age_days` and
+    `min_reach_multiple` are AND'd on top. Rank-based selection alone pads a
+    thin cohort with whatever exists, viral or not, and the whole point of the
+    output is "only things that actually went well".
     """
     baselines_computed = compute_baselines(conn)
     baselines = _latest_baselines(conn)
@@ -274,12 +276,15 @@ def score_and_select(
     rankable = scoring.cohort_is_rankable(len(posts))
 
     def _eligible(i: int, p) -> bool:
-        if min_plays and p["play_count"] < min_plays:
+        if max_age_days and ages[i] > max_age_days:
             return False
         if min_reach_multiple and reach_indices[i] < min_reach_multiple:
             return False
-        if max_age_days and ages[i] > max_age_days:
-            return False
+        if min_plays or min_likes:
+            plays_ok = bool(min_plays) and p["play_count"] >= min_plays
+            likes_ok = bool(min_likes) and p["digg_count"] >= min_likes
+            if not (plays_ok or likes_ok):
+                return False
         return True
 
     candidates = [

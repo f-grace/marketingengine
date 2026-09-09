@@ -71,11 +71,15 @@ class ScrapeSettings:
     n_reach_only: int = 8
     # Performance floors. Selection is rank-based, so without these a thin
     # cohort pads the winner list with whatever exists — observed live: a
-    # 263-play, 0-like post selected as a "winner". A post must clear ALL
-    # floors to be eligible; 0 disables a floor.
-    min_plays: int = 10_000
-    min_reach_multiple: float = 2.0
+    # 263-play, 0-like post selected as a "winner". 0 disables a floor.
+    # min_likes and min_plays are OR'd (either qualifies a post); the age and
+    # reach-multiple floors are AND'd on top.
+    min_plays: int = 25_000
+    min_likes: int = 1_000
+    min_reach_multiple: float = 0.0
     max_age_days: int = 30
+    # Leave own posts out of selection (they are still scraped for history).
+    exclude_own: bool = False
 
 
 @dataclass
@@ -182,9 +186,11 @@ def load_scrape_settings(path: Optional[Path] = None) -> ScrapeSettings:
         n_anomalies=raw.get("n_anomalies", defaults.n_anomalies),
         n_reach_only=raw.get("n_reach_only", defaults.n_reach_only),
         min_plays=raw.get("min_plays", defaults.min_plays),
+        min_likes=raw.get("min_likes", defaults.min_likes),
         min_reach_multiple=raw.get("min_reach_multiple",
                                    defaults.min_reach_multiple),
         max_age_days=raw.get("max_age_days", defaults.max_age_days),
+        exclude_own=raw.get("exclude_own", defaults.exclude_own),
     )
 
 

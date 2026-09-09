@@ -198,7 +198,9 @@ def cmd_score(args) -> int:
         n_losers=settings.n_losers,
         n_anomalies=settings.n_anomalies,
         n_reach_only=settings.n_reach_only,
+        exclude_own=settings.exclude_own,
         min_plays=settings.min_plays,
+        min_likes=settings.min_likes,
         min_reach_multiple=settings.min_reach_multiple,
         max_age_days=settings.max_age_days,
     )

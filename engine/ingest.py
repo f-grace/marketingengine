@@ -194,9 +194,14 @@ def ingest_items(
             report.inserted += 1
 
         for idx, url in enumerate(slide_links):
+            # CDN URLs are signed and expire, so a re-scrape must refresh the
+            # URL; the ON CONFLICT update deliberately leaves local_path alone
+            # so an already-downloaded image is not forgotten.
             conn.execute(
-                "INSERT OR IGNORE INTO post_images (post_id, slide_index, url) "
-                "VALUES (?, ?, ?)",
+                """INSERT INTO post_images (post_id, slide_index, url)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(post_id, slide_index)
+                   DO UPDATE SET url = excluded.url""",
                 (post_id, idx, url),
             )
             report.images += 1

@@ -405,6 +405,24 @@ class TestPerformanceFloors:
         )
         assert report.selection.total == 0
 
+    def test_likes_and_plays_floors_are_or_semantics(self, conn):
+        """1,000+ likes OR 25,000+ views qualifies; failing both excludes."""
+        items = [_item(f"p{i}", "a", 5_000, 50, likes=100) for i in range(12)]
+        # Qualifies on likes alone (low views), on views alone (low likes),
+        # and one that fails both.
+        items.append(_item("liked", "a", 8_000, 300, likes=2_000))
+        items.append(_item("viewed", "a", 40_000, 300, likes=400))
+        items.append(_item("neither", "a", 20_000, 300, likes=900))
+        ingest.ingest_items(conn, items, [])
+        pipeline.score_and_select(conn, min_plays=25_000, min_likes=1_000)
+        selected = {
+            r["tiktok_id"] for r in conn.execute(
+                "SELECT p.tiktok_id FROM post_scores s "
+                "JOIN posts p ON p.id=s.post_id WHERE s.selected_as IS NOT NULL"
+            )
+        }
+        assert selected == {"liked", "viewed"}
+
     def test_floors_off_preserves_rank_based_behaviour(self, conn):
         items = [_item(f"p{i}", "a", 200 + i, 2) for i in range(13)]
         ingest.ingest_items(conn, items, [])
